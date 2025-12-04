@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SnipBoard</title>
+
+    <link rel="stylesheet" href="styles.css" />
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';" />
+  </head>
+
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <div class="header-actions left-actions">
+          <button id="newClipBtn" class="icon-button" title="Capture selected text">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <circle cx="20" cy="20" r="6"></circle>
+              <circle cx="36" cy="36" r="6"></circle>
+              <path d="M24 24 L40 40 M28 12 L44 28" stroke-width="4"></path>
+            </svg>
+          </button>
+          <button id="newSnipBtn" class="icon-button" title="Capture full screenshot">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <rect x="10" y="16" width="44" height="32" rx="6" ry="6"></rect>
+              <circle cx="32" cy="32" r="9"></circle>
+              <rect x="24" y="10" width="16" height="6" rx="2" ry="2"></rect>
+            </svg>
+          </button>
+        </div>
+        <div class="brand">
+          <div class="title app-title">SnipBoard</div>
+        </div>
+        <div class="header-actions"></div>
+      </header>
+
+      <div class="toolbar">
+        <div class="tabs-wrap">
+          <div id="sectionTabs" class="section-tabs"></div>
+        </div>
+
+        <div class="filters">
+          <input id="searchInput" placeholder="Search clips" />
+          <input id="tagFilterInput" placeholder="Filter tags (comma separated)" />
+        </div>
+
+        <div class="export-controls">
+          <div class="export-label">Export folder:</div>
+          <div class="export-actions">
+            <button id="setExportBtn" class="ghost">Set export folder</button>
+            <button id="clearExportBtn" class="ghost danger">Clear</button>
+          </div>
+          <div id="exportPathDisplay" class="export-path"></div>
+        </div>
+
+        <div class="toolbar-actions"></div>
+      </div>
+
+      <div class="content">
+        <aside id="clipPane">
+          <div class="list-header">
+            <div class="list-title">Clips</div>
+            <div class="list-controls">
+              <button id="lockToggleBtn" class="icon-button lock-button" title="Lock this section">🔓</button>
+              <button id="listAddBtn" class="pill" title="New clip in current section">+</button>
+            </div>
+          </div>
+          <div id="clipList" class="clip-list"></div>
+        </aside>
+
+        <main id="editor">
+          <div class="main-actions editor-actions">
+            <button id="saveClipBtn">Save Clip</button>
+            <button id="deleteClipBtn" class="danger">Delete</button>
+            <button id="addShotBtn" class="ghost">+ Add Screenshot</button>
+          </div>
+          <div class="field-row title-row">
+            <div>
+              <label>Title</label>
+              <input id="titleInput" />
+            </div>
+            <div>
+              <label>Section</label>
+              <select id="sectionSelect"></select>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label>Text</label>
+            <textarea id="textInput" class="tall"></textarea>
+          </div>
+
+          <div class="field-row">
+            <label>Screenshots</label>
+            <div id="screenshotContainer" class="screenshot-strip"></div>
+          </div>
+
+          <div class="field-row">
+            <label>Tags</label>
+            <input id="tagsInput" />
+          </div>
+
+          <div class="field-row split">
+            <div class="source-url">
+              <label>Source URL</label>
+              <div class="source-input">
+                <input id="sourceUrlInput" />
+                <button id="openSourceBtn" title="Open source URL" class="ghost">
+                  Open
+                </button>
+              </div>
+            </div>
+            <div>
+              <label>Source Title</label>
+              <input id="sourceTitleInput" />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label>Captured At</label>
+            <input id="capturedAtInput" readonly />
+          </div>
+
+          <div class="field-row">
+            <label>Notes</label>
+            <textarea id="notesInput"></textarea>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script defer src="renderer.js"></script>
+    <div id="screenshotModal" class="shot-modal">
+      <div class="shot-modal-backdrop"></div>
+      <div class="shot-modal-frame">
+        <img id="shotModalImage" alt="Screenshot preview" />
+      </div>
+    </div>
+  </body>
+</html>
