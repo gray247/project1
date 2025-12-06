@@ -1,6 +1,9 @@
 node_modules/
-data/
-screenshots/
 *.log
 *.tmp
 .DS_Store
+/data/
+/data/screenshots/
+/data/exports/
+*.json
+!package.json

@@ -3,16 +3,70 @@ const http = require("http");
 const path = require("path");
 const fs = require("fs");
 
-const DATA_DIR = path.join(__dirname, "data");
+const BASE_DATA_DIR = path.join("C:\\Dev2\\SnipBoard", "data");
+const DATA_DIR = BASE_DATA_DIR;
 const CLIPS_FILE = path.join(DATA_DIR, "clips.json");
 const SECTIONS_FILE = path.join(DATA_DIR, "sections.json");
 const SCREENSHOTS_DIR = path.join(DATA_DIR, "screenshots");
 const SECTION_DIR = path.join(DATA_DIR, "sections");
+const TABS_FILE = path.join(DATA_DIR, "tabs.json");
+const CONFIG_FILE = path.join(DATA_DIR, "config.json");
+
+function migrateDataFiles() {
+  const oldDataDir = path.join(__dirname, "data");
+  const oldTabsFile = path.join(app.getPath("userData"), "tabs.json");
+  const targets = [
+    { from: path.join(oldDataDir, "clips.json"), to: CLIPS_FILE },
+    { from: path.join(oldDataDir, "sections.json"), to: SECTIONS_FILE },
+    { from: path.join(oldDataDir, "tabs.json"), to: TABS_FILE },
+    { from: oldTabsFile, to: TABS_FILE },
+    { from: path.join(oldDataDir, "config.json"), to: CONFIG_FILE },
+  ];
+
+  ensureDir(BASE_DATA_DIR);
+  ensureDir(SCREENSHOTS_DIR);
+  ensureDir(SECTION_DIR);
+
+  for (const entry of targets) {
+    try {
+      if (fs.existsSync(entry.from) && !fs.existsSync(entry.to)) {
+        ensureDir(path.dirname(entry.to));
+        fs.renameSync(entry.from, entry.to);
+      }
+    } catch (err) {
+      console.warn("[SnipBoard] Migration move failed:", entry.from, err);
+    }
+  }
+
+  const oldShotsDir = path.join(oldDataDir, "screenshots");
+  if (fs.existsSync(oldShotsDir) && !fs.existsSync(SCREENSHOTS_DIR)) {
+    try {
+      fs.renameSync(oldShotsDir, SCREENSHOTS_DIR);
+    } catch (err) {
+      console.warn("[SnipBoard] Migration screenshots move failed:", err);
+    }
+  }
+}
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+}
+
+function loadTabsConfigFromDisk() {
+  const fallback = { tabs: [], activeTabId: "inbox" };
+  const data = readJson(TABS_FILE, fallback);
+  if (Array.isArray(data)) return { tabs: data, activeTabId: "inbox" };
+  const tabs = Array.isArray(data.tabs) ? data.tabs : [];
+  const activeTabId = typeof data.activeTabId === "string" ? data.activeTabId : "inbox";
+  return { tabs, activeTabId };
+}
+
+function saveTabsConfigToDisk(config) {
+  const tabs = Array.isArray(config?.tabs) ? config.tabs : [];
+  const activeTabId = typeof config?.activeTabId === "string" ? config.activeTabId : "inbox";
+  writeJson(TABS_FILE, { tabs, activeTabId });
 }
 
 function readJson(file, fallback) {
@@ -40,6 +94,7 @@ function loadData() {
   ensureDir(DATA_DIR);
   ensureDir(SCREENSHOTS_DIR);
   ensureDir(SECTION_DIR);
+  migrateDataFiles();
 
   const defaultSections = [
     { id: "inbox", name: "Inbox", locked: false, exportPath: "", folder: path.join(SECTION_DIR, "inbox") },
@@ -290,6 +345,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false,
+      enableRemoteModule: false
     },
   });
 
@@ -300,6 +356,7 @@ function createWindow() {
 app.whenReady().then(() => {
   ensureDir(DATA_DIR);
   ensureDir(SCREENSHOTS_DIR);
+  migrateDataFiles();
   createWindow();
   startHttpBridge();
 
@@ -366,6 +423,7 @@ ipcMain.handle("delete-clips", async (_event, ids) => {
 });
 
 ipcMain.handle("create-section", async (_event, name) => {
+  migrateDataFiles();
   const { sections } = loadData();
   const base = String(name || "Section").trim() || "Section";
   const id = base.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "");
@@ -378,6 +436,35 @@ ipcMain.handle("create-section", async (_event, name) => {
   sections.push(section);
   saveSections(sections);
   return section;
+});
+
+ipcMain.handle("rename-section", async (_event, payload) => {
+  const { sections } = loadData();
+  const { id, name } = payload || {};
+  const target = sections.find((s) => s.id === id);
+  if (!target) return { ok: false, error: "Section not found" };
+  const newName = String(name || "").trim();
+  if (!newName) return { ok: false, error: "Invalid name" };
+  target.name = newName;
+  saveSections(sections);
+  return { ok: true, section: target };
+});
+
+ipcMain.handle("update-section", async (_event, payload) => {
+  const { sections } = loadData();
+  const { id, patch } = payload || {};
+  const target = sections.find((s) => s.id === id);
+  if (!target) return { ok: false, error: "Section not found" };
+  if (patch && typeof patch === "object") {
+    if (patch.name !== undefined) target.name = patch.name;
+    if (patch.locked !== undefined) target.locked = !!patch.locked;
+    if (patch.exportPath !== undefined) target.exportPath = patch.exportPath || "";
+    if (patch.color !== undefined) target.color = patch.color || "";
+    if (patch.icon !== undefined) target.icon = patch.icon || "";
+    if (patch.exportFolder !== undefined) target.exportFolder = patch.exportFolder || "";
+  }
+  saveSections(sections);
+  return { ok: true, section: target };
 });
 
 ipcMain.handle("delete-section", async (_event, id) => {
@@ -478,6 +565,7 @@ ipcMain.handle("save-screenshot", async (_event, payload) => {
       if (!base64) continue;
       const buffer = Buffer.from(base64, "base64");
       const filename =
+        item.filename ||
         "shot-" + Date.now() + "-" + Math.random().toString(16).slice(2) + ".png";
       const filePath = path.join(SCREENSHOTS_DIR, filename);
       fs.writeFileSync(filePath, buffer);
@@ -608,4 +696,19 @@ ipcMain.handle("open-url", async (_event, url) => {
   } catch (err) {
     console.error("[SnipBoard] open-url failed:", err);
   }
+});
+
+/*
+=================================================
+  TABS CONFIG
+=================================================
+*/
+
+ipcMain.handle("tabs:load", async () => {
+  return loadTabsConfigFromDisk();
+});
+
+ipcMain.handle("tabs:save", async (_event, config) => {
+  saveTabsConfigToDisk(config || {});
+  return { ok: true };
 });

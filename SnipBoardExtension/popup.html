@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      width: 260px;
+      font-family: Arial, sans-serif;
+      margin: 10px;
+    }
+    label {
+      font-size: 13px;
+      margin-top: 6px;
+      display: block;
+    }
+    select, input {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 2px;
+      padding: 4px 6px;
+      font-size: 13px;
+    }
+    #saveBtn {
+      margin-top: 10px;
+      width: 100%;
+      padding: 6px 0;
+      font-size: 13px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #saveBtn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    #selectedCount {
+      font-weight: bold;
+    }
+    #statusLog {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #111827;
+      min-height: 36px;
+      padding: 6px;
+      border-radius: 4px;
+      background: #f3f4f6;
+      border: 1px solid #dfe3eb;
+      white-space: pre-wrap;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    Selected messages: <span id="selectedCount">0</span>
+  </div>
+
+  <label>Section</label>
+  <select id="sectionSelect">
+    <option value="inbox">Inbox</option>
+    <option value="common-prompts">Common Prompts</option>
+    <option value="black-skies">Black Skies</option>
+    <option value="errors">Errors</option>
+    <option value="misc">Misc</option>
+  </select>
+
+  <label>Title</label>
+  <input id="titleInput" placeholder="Optional (auto if empty)" />
+
+  <label>Tags (comma separated)</label>
+  <input id="tagsInput" placeholder="e.g. prompt, sdk" />
+
+  <button id="saveBtn">Waiting...</button>
+  <div id="statusLog">Status: waiting for connection...</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

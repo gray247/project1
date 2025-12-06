@@ -10,14 +10,75 @@ const state = {
   sections: [],
   clips: [],
   currentSectionId: "all",
+  tabs: [],
+  activeTabId: "all",
   currentClipId: null,
   selectedClipIds: new Set(),
   searchText: "",
   tagFilter: "",
+  editingSectionId: null,
+  renameDraft: "",
+  pendingColorSection: null,
+  pendingIconSection: null,
+  selectedIcon: "",
 };
 
-let lastPollSignature = "";
+const IPC = {
+  GET_DATA: "get-data",
+  SAVE_CLIP: "save-clip",
+  DELETE_CLIP: "delete-clip",
+  DELETE_CLIPS: "delete-clips",
+  CREATE_SECTION: "create-section",
+  RENAME_SECTION: "rename-section",
+  UPDATE_SECTION: "update-section",
+  LOAD_TABS: "tabs:load",
+  SAVE_TABS: "tabs:save",
+  CHOOSE_EXPORT_FOLDER: "choose-export-folder",
+  SAVE_SCREENSHOT: "save-screenshot",
+  CAPTURE_SCREEN: "capture-screen",
+  OPEN_URL: "open-url",
+  SET_SECTION_EXPORT_PATH: "set-section-export-path",
+  SET_SECTION_LOCKED: "set-section-locked",
+  SAVE_SECTION_ORDER: "save-section-order"
+};
 
+const DEFAULT_SCHEMA = ["title", "text", "screenshots", "tags", "sourceUrl", "sourceTitle", "capturedAt", "notes"];
+const FIELD_OPTIONS = DEFAULT_SCHEMA.slice();
+let searchIndex = new Map();
+let draggingClipId = null;
+function noopInvoke(channel, args) {
+  return window.api.invoke(channel, args);
+}
+
+// Future-use IPC wrappers (no-op behavior)
+async function noopDeleteClip(id) { return noopInvoke(IPC.DELETE_CLIP, id); }
+async function noopGetScreenshotUrl(name) { return noopInvoke("get-screenshot-url", name); }
+async function noopListDisplays() { return noopInvoke("list-displays"); }
+async function noopDebugListDisplays() { return noopInvoke("debug-list-displays"); }
+
+let lastPollSignature = "";
+let handlersBound = false;
+let hiddenColorInput = null;
+let draggingSectionId = null;
+let dragHoverSectionId = null;
+const protectedSections = new Set(["inbox", "common-prompts", "black-skies", "errors", "misc"]);
+let saveTabsTimer = null;
+let syncingTabs = false;
+const iconChoices = [
+  { key: "inbox", label: "Inbox", icon: "\u{1F4E5}" },
+  { key: "folder", label: "Folder", icon: "\u{1F4C1}" },
+  { key: "test", label: "Test", icon: "\u{1F9EA}" },
+  { key: "errors", label: "Errors", icon: "\u26A0\uFE0F" },
+  { key: "ideas", label: "Ideas", icon: "\u{1F4A1}" },
+  { key: "star", label: "Star", icon: "\u2B50" },
+];
+const DEFAULT_TABS = [
+  { id: "inbox", label: "Inbox", locked: false, exportFolder: "", color: "", icon: "\u{1F4E5}", order: 0, schema: DEFAULT_SCHEMA.slice() },
+  { id: "common-prompts", label: "Common Prompts", locked: false, exportFolder: "", color: "", icon: "\u{1F4A1}", order: 1, schema: DEFAULT_SCHEMA.slice() },
+  { id: "black-skies", label: "Black Skies", locked: false, exportFolder: "", color: "", icon: "", order: 2, schema: DEFAULT_SCHEMA.slice() },
+  { id: "errors", label: "Errors", locked: false, exportFolder: "", color: "", icon: "\u26A0\uFE0F", order: 3, schema: DEFAULT_SCHEMA.slice() },
+  { id: "misc", label: "Misc", locked: false, exportFolder: "", color: "", icon: "", order: 4, schema: DEFAULT_SCHEMA.slice() },
+];
 // ===============================================================
 // DOM ELEMENTS
 // ===============================================================
@@ -35,6 +96,17 @@ const sectionSelect = document.getElementById("sectionSelect");
 const sourceUrlInput = document.getElementById("sourceUrlInput");
 const sourceTitleInput = document.getElementById("sourceTitleInput");
 const capturedAtInput = document.getElementById("capturedAtInput");
+const titleRow = document.querySelector(".title-row");
+const textRow = textInput ? textInput.closest(".field-row") : null;
+const screenshotsRow = screenshotBox ? screenshotBox.closest(".field-row") : null;
+const tagsRow = document.querySelector(".tags-row");
+const tagsCol = document.querySelector(".tags-col");
+const capturedCol = document.querySelector(".captured-col");
+const sourceRow = document.querySelector(".source-row");
+const sourceUrlCol = document.querySelector(".source-url");
+const sourceTitleCol = sourceTitleInput ? sourceTitleInput.parentElement : null;
+const notesRow = notesInput ? notesInput.closest(".field-row") : null;
+const screenshotEditModalId = "screenshot-edit-modal";
 
 const newClipBtn = document.getElementById("newClipBtn");
 const newSnipBtn = document.getElementById("newSnipBtn");
@@ -52,7 +124,20 @@ const lockToggleBtn = document.getElementById("lockToggleBtn");
 const setExportBtn = document.getElementById("setExportBtn");
 const clearExportBtn = document.getElementById("clearExportBtn");
 const exportPathDisplay = document.getElementById("exportPathDisplay");
-const lockSectionCheckbox = document.getElementById("lockSectionCheckbox");
+const lockSectionCheckbox = null;
+const tabContextMenu = document.getElementById("tabContextMenu");
+const renameModal = document.getElementById("renameModal");
+const renameInput = document.getElementById("renameInput");
+const renameSaveBtn = document.getElementById("renameSaveBtn");
+const renameCancelBtn = document.getElementById("renameCancelBtn");
+const colorModal = document.getElementById("colorModal");
+const colorInput = document.getElementById("colorInput");
+const colorSaveBtn = document.getElementById("colorSaveBtn");
+const colorCancelBtn = document.getElementById("colorCancelBtn");
+const iconModal = document.getElementById("iconModal");
+const iconChoicesContainer = document.getElementById("iconChoices");
+const iconSaveBtn = document.getElementById("iconSaveBtn");
+const iconCancelBtn = document.getElementById("iconCancelBtn");
 
 // ---------------------------------------------------------------
 // Helpers
@@ -82,6 +167,237 @@ function getCurrentClip() {
   return state.clips.find(c => c.id === state.currentClipId) || null;
 }
 
+function updateSearchIndex(clips) {
+  searchIndex = new Map();
+  (clips || []).forEach((clip) => {
+    const tagsString = Array.isArray(clip.tags) ? clip.tags.join(" ") : "";
+    const entry = `${clip.title || ""} ${clip.text || ""} ${tagsString}`.toLowerCase();
+    searchIndex.set(clip.id, entry);
+  });
+}
+
+function applySchemaVisibility(schema) {
+  const schemaSet = new Set(Array.isArray(schema) && schema.length ? schema : DEFAULT_SCHEMA);
+  if (!titleRow || !textRow || !screenshotsRow || !tagsRow || !sourceRow || !notesRow) return;
+  titleRow.style.display = schemaSet.has("title") ? "" : "none";
+  textRow.style.display = schemaSet.has("text") ? "" : "none";
+  screenshotsRow.style.display = schemaSet.has("screenshots") ? "" : "none";
+  if (tagsRow) {
+    const showTags = schemaSet.has("tags");
+    const showCaptured = schemaSet.has("capturedAt");
+    tagsRow.style.display = showTags || showCaptured ? "" : "none";
+    if (tagsCol) tagsCol.style.display = showTags ? "" : "none";
+    if (capturedCol) capturedCol.style.display = showCaptured ? "" : "none";
+  }
+  const showUrl = schemaSet.has("sourceUrl");
+  const showTitle = schemaSet.has("sourceTitle");
+  sourceRow.style.display = showUrl || showTitle ? "" : "none";
+  if (sourceUrlCol) sourceUrlCol.style.display = showUrl ? "" : "none";
+  if (sourceTitleCol) sourceTitleCol.style.display = showTitle ? "" : "none";
+  notesRow.style.display = schemaSet.has("notes") ? "" : "none";
+}
+
+function openScreenshotEditor(fullPath, filename, clip) {
+  const existing = document.getElementById(screenshotEditModalId);
+  if (existing) existing.remove();
+  const overlay = document.createElement("div");
+  overlay.id = screenshotEditModalId;
+  overlay.style.position = "fixed";
+  overlay.style.top = "0";
+  overlay.style.left = "0";
+  overlay.style.width = "100vw";
+  overlay.style.height = "100vh";
+  overlay.style.background = "rgba(0,0,0,0.5)";
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  overlay.style.zIndex = "100000";
+
+  const modal = document.createElement("div");
+  modal.style.background = "#fff";
+  modal.style.padding = "12px";
+  modal.style.borderRadius = "8px";
+  modal.style.boxShadow = "0 8px 20px rgba(0,0,0,0.25)";
+  modal.style.maxWidth = "90vw";
+  modal.style.maxHeight = "90vh";
+  modal.style.display = "flex";
+  modal.style.flexDirection = "column";
+  modal.style.gap = "8px";
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  let drawing = false;
+  let erasing = false;
+  let penColor = "#ff0000";
+  let lastX = 0;
+  let lastY = 0;
+
+  const toolbar = document.createElement("div");
+  toolbar.style.display = "flex";
+  toolbar.style.gap = "8px";
+  toolbar.style.alignItems = "center";
+
+  const penBtn = document.createElement("button");
+  penBtn.textContent = "Pen";
+  penBtn.onclick = () => { erasing = false; };
+
+  const eraserBtn = document.createElement("button");
+  eraserBtn.textContent = "Eraser";
+  eraserBtn.onclick = () => { erasing = true; };
+
+  const colorInputEl = document.createElement("input");
+  colorInputEl.type = "color";
+  colorInputEl.value = penColor;
+  colorInputEl.onchange = (e) => { penColor = e.target.value || "#ff0000"; };
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Save";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.onclick = () => overlay.remove();
+
+  toolbar.appendChild(penBtn);
+  toolbar.appendChild(eraserBtn);
+  toolbar.appendChild(colorInputEl);
+  toolbar.appendChild(saveBtn);
+  toolbar.appendChild(cancelBtn);
+
+  modal.appendChild(toolbar);
+  modal.appendChild(canvas);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    canvas.style.maxWidth = "80vw";
+    canvas.style.maxHeight = "70vh";
+    ctx.drawImage(img, 0, 0);
+  };
+  img.src = "file://" + fullPath.replace(/\\/g, "/");
+
+  const draw = (x, y) => {
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = erasing ? "rgba(0,0,0,0)" : penColor;
+    ctx.lineWidth = erasing ? 14 : 4;
+    ctx.globalCompositeOperation = erasing ? "destination-out" : "source-over";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    lastX = x;
+    lastY = y;
+  };
+
+  const startDraw = (e) => {
+    drawing = true;
+    const rect = canvas.getBoundingClientRect();
+    lastX = e.clientX - rect.left;
+    lastY = e.clientY - rect.top;
+  };
+  const moveDraw = (e) => {
+    if (!drawing) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    draw(x, y);
+  };
+  const endDraw = () => { drawing = false; };
+
+  canvas.addEventListener("mousedown", startDraw);
+  canvas.addEventListener("mousemove", moveDraw);
+  canvas.addEventListener("mouseup", endDraw);
+  canvas.addEventListener("mouseleave", endDraw);
+
+  saveBtn.onclick = async () => {
+    const dataUrl = canvas.toDataURL("image/png");
+    await window.api.invoke("save-screenshot", [{ dataUrl, filename }]);
+    overlay.remove();
+    await refreshData(clip.id);
+  };
+}
+
+function normalizeTabs(tabs) {
+  if (!Array.isArray(tabs)) return DEFAULT_TABS.map((t, idx) => ({ ...t, order: idx }));
+  const sanitizeSchema = (schema) => {
+    if (!Array.isArray(schema) || !schema.length) return DEFAULT_SCHEMA.slice();
+    const filtered = schema.filter((f) => FIELD_OPTIONS.includes(f));
+    return filtered.length ? filtered : DEFAULT_SCHEMA.slice();
+  };
+  return tabs
+    .map((t, idx) => ({
+      id: t.id || `tab-${idx}`,
+      label: t.label || t.name || `Tab ${idx + 1}`,
+      locked: Boolean(t.locked),
+      exportFolder: typeof t.exportFolder === "string" ? t.exportFolder : "",
+      exportPath: typeof t.exportPath === "string" ? t.exportPath : (typeof t.exportFolder === "string" ? t.exportFolder : ""),
+      color: typeof t.color === "string" ? t.color : "",
+      icon: typeof t.icon === "string" ? t.icon : "",
+      order: Number.isFinite(t.order) ? t.order : idx,
+      schema: sanitizeSchema(t.schema),
+    }))
+    .sort((a, b) => a.order - b.order);
+}
+
+function tabsToSections(tabs) {
+  return tabs.map((t) => ({
+    id: t.id,
+    name: t.label,
+    locked: t.locked,
+    exportPath: t.exportPath || t.exportFolder || "",
+    exportFolder: t.exportFolder || t.exportPath || "",
+    color: t.color || "",
+    icon: t.icon || "",
+    schema: Array.isArray(t.schema) ? t.schema : DEFAULT_SCHEMA.slice(),
+  }));
+}
+
+function sectionsToTabs(sections) {
+  if (!Array.isArray(sections)) return DEFAULT_TABS;
+  return sections.map((s, idx) => ({
+    id: s.id,
+    label: s.name || s.id || `Tab ${idx + 1}`,
+    locked: !!s.locked,
+    exportFolder: s.exportFolder || s.exportPath || "",
+    exportPath: s.exportPath || s.exportFolder || "",
+    color: s.color || "",
+    icon: s.icon || "",
+    order: Number.isFinite(s.order) ? s.order : idx,
+    schema: Array.isArray(s.schema) && s.schema.length ? s.schema : DEFAULT_SCHEMA.slice(),
+  }));
+}
+
+function syncSectionsFromTabs() {
+  state.sections = tabsToSections(state.tabs);
+}
+
+async function syncTabsToBackend() {
+  if (syncingTabs) return;
+  syncingTabs = true;
+  try {
+    for (const tab of state.tabs) {
+      await window.api.invoke(IPC.SET_SECTION_EXPORT_PATH, { id: tab.id, exportPath: tab.exportFolder || "" });
+      await window.api.invoke(IPC.SET_SECTION_LOCKED, { id: tab.id, locked: !!tab.locked });
+    }
+    await window.api.invoke(IPC.SAVE_SECTION_ORDER, state.tabs.map((t, idx) => ({ id: t.id, name: t.label, order: idx })));
+  } catch (err) {
+    console.error("[SnipBoard] syncTabsToBackend failed:", err);
+  } finally {
+    syncingTabs = false;
+  }
+}
+
+function getActiveTab() {
+  const tab = state.tabs.find((t) => t.id === state.activeTabId) || null;
+  if (tab && (!Array.isArray(tab.schema) || !tab.schema.length)) {
+    tab.schema = DEFAULT_SCHEMA.slice();
+  }
+  return tab;
+}
+
 function getSectionById(id) {
   return state.sections.find((s) => s.id === id) || null;
 }
@@ -100,27 +416,90 @@ function pruneSelected() {
   });
 }
 
+function normalizeSections(sections) {
+  return (sections || []).map((s) => ({
+    ...s,
+    exportFolder: s.exportFolder ?? s.exportPath ?? "",
+    exportPath: s.exportPath ?? s.exportFolder ?? "",
+    color: s.color || "",
+    icon: s.icon || "",
+  }));
+}
+
 function updateExportPathDisplay() {
-  const currentSec = state.sections.find((s) => s.id === state.currentSectionId);
-  if (!currentSec || state.currentSectionId === "all") {
+  const activeTab = getActiveTab();
+  if (!activeTab || state.activeTabId === "all") {
     exportPathDisplay.textContent = "No section selected";
-    setExportBtn.disabled = true;
-    clearExportBtn.disabled = true;
+    if (setExportBtn) setExportBtn.disabled = true;
+    if (clearExportBtn) clearExportBtn.disabled = true;
     return;
   }
-  setExportBtn.disabled = false;
-  clearExportBtn.disabled = false;
-  exportPathDisplay.textContent = currentSec.exportPath || "(not set)";
+  if (setExportBtn) setExportBtn.disabled = true;
+  if (clearExportBtn) clearExportBtn.disabled = true;
+  const path = activeTab.exportFolder;
+  exportPathDisplay.textContent = path || "(not set)";
 }
 
 function isSectionLocked(sectionId) {
   if (!sectionId || sectionId === "all") return false;
+  const tab = state.tabs.find((t) => t.id === sectionId);
+  if (tab) return !!tab.locked;
   return lockedSections.has(sectionId);
 }
 
 function syncLockedSectionsFromState() {
   const persisted = state.sections.filter((s) => s.locked).map((s) => s.id);
   lockedSections = new Set([...lockedSections, ...persisted]);
+}
+
+function scheduleSaveTabsConfig() {
+  if (saveTabsTimer) clearTimeout(saveTabsTimer);
+  saveTabsTimer = setTimeout(async () => {
+    const payload = {
+      tabs: state.tabs.map((t, idx) => ({
+        ...t,
+        exportPath: t.exportPath || t.exportFolder || "",
+        exportFolder: t.exportFolder || t.exportPath || "",
+        order: Number.isFinite(t.order) ? t.order : idx,
+      })),
+      activeTabId: state.activeTabId || "all",
+    };
+    try {
+      window.tabsState = payload;
+      await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+    } catch (err) {
+      console.error("[SnipBoard] saveTabsConfig failed:", err);
+    }
+  }, 250);
+}
+
+async function updateSection(id, patch) {
+  if (!id) return null;
+  const current = state.sections.find((s) => s.id === id);
+  if (current) {
+    Object.assign(current, patch);
+  }
+
+  try {
+    await window.api.invoke(IPC.UPDATE_SECTION, { id, patch });
+    if (patch.locked !== undefined) {
+      await window.api.invoke(IPC.SET_SECTION_LOCKED, { id, locked: patch.locked });
+    }
+    if (patch.exportFolder !== undefined || patch.exportPath !== undefined) {
+      const pathVal = patch.exportFolder ?? patch.exportPath ?? "";
+      await window.api.invoke(IPC.SET_SECTION_EXPORT_PATH, { id, exportPath: pathVal });
+    }
+    await window.api.invoke(IPC.SAVE_SECTION_ORDER, state.sections.map((s) => ({ id: s.id, name: s.name })));
+  } catch (err) {
+    console.error("[SnipBoard] updateSection failed:", err);
+  }
+
+  if (patch.locked !== undefined) {
+    if (patch.locked) lockedSections.add(id);
+    else lockedSections.delete(id);
+  }
+
+  return current;
 }
 
 function updateDeleteButtonsLockState() {
@@ -170,7 +549,9 @@ const lockSectionCheckboxHandler = () => {
   const next = !lockedSections.has(id);
   if (next) lockedSections.add(id);
   else lockedSections.delete(id);
-  if (api.setSectionLocked) api.setSectionLocked(id, next);
+  const sec = state.sections.find((s) => s.id === id);
+  if (sec) sec.locked = next;
+  updateSection(id, { locked: next });
   renderSections();
   updateDeleteButtonsLockState();
   renderLockButtonState();
@@ -179,7 +560,9 @@ const lockSectionCheckboxHandler = () => {
 function setCurrentSection(sectionId) {
   if (!sectionId) sectionId = "all";
   state.currentSectionId = sectionId;
+  state.activeTabId = sectionId;
   state.currentClipId = null;
+  closeTabContextMenu();
 
   renderSections();
   renderClipList();
@@ -187,12 +570,13 @@ function setCurrentSection(sectionId) {
   updateExportPathDisplay();
   updateDeleteButtonsLockState();
   renderLockButtonState();
+  scheduleSaveTabsConfig();
 }
 
 function renderLockButtonState() {
   if (!lockToggleBtn) return;
   const locked = isSectionLocked(state.currentSectionId);
-  lockToggleBtn.textContent = locked ? "🔒" : "🔓";
+  lockToggleBtn.textContent = locked ? "\ud83d\udd12" : "\ud83d\udd13";
   lockToggleBtn.title = "Lock this section";
 }
 
@@ -204,7 +588,7 @@ async function renderScreenshots(clip) {
   screenshotBox.innerHTML = "";
   const shots = Array.isArray(clip.screenshots) ? clip.screenshots : [];
   for (const file of shots) {
-    const check = await api.checkScreenshotExists(file);
+    const check = await window.api.invoke("check-screenshot-path", file);
     if (!check || !check.ok || !check.exists) {
       const missing = document.createElement("div");
       missing.className = "screenshot-missing";
@@ -226,6 +610,12 @@ async function renderScreenshots(clip) {
     img.addEventListener("dblclick", () => openScreenshotModal(img.src));
     img.addEventListener("click", () => openScreenshotModal(img.src));
     screenshotBox.appendChild(img);
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "screenshot-edit-btn";
+    editBtn.textContent = "Edit";
+    editBtn.onclick = () => openScreenshotEditor(check.fullPath, file, clip);
+    screenshotBox.appendChild(editBtn);
   }
 }
 
@@ -234,73 +624,531 @@ async function renderScreenshots(clip) {
 // ===============================================================
 
 function renderSections() {
-  const sectionTabs = document.getElementById("sectionTabs");
+  syncSectionsFromTabs();
+  renderSectionsBar();
+}
+
+function renderTabs() {
+  renderSectionsBar();
   if (!sectionTabs) return;
+  const tabsFromState = (window.tabsState && Array.isArray(window.tabsState.tabs)) ? window.tabsState.tabs : state.tabs;
+  const tabMap = new Map((tabsFromState || []).map((t) => [t.id, t]));
+  sectionTabs.querySelectorAll(".section-pill").forEach((pill) => {
+    const tabId = pill.dataset.sectionId;
+    if (!tabId) return;
+    const tab = tabMap.get(tabId);
+    if (!tab) return;
+    if (tab.color) {
+      pill.style.backgroundColor = tab.color;
+      pill.style.borderColor = tab.color;
+      pill.style.color = "#fff";
+      pill.classList.add("section-pill--colored");
+    }
+    if (tab.icon) {
+      let iconSpan = pill.querySelector(".section-pill__icon");
+      if (!iconSpan) {
+        const content = pill.querySelector(".section-pill__content");
+        if (content) {
+          iconSpan = document.createElement("span");
+          iconSpan.className = "section-pill__icon";
+          content.insertBefore(iconSpan, content.firstChild);
+        }
+      }
+      if (iconSpan) iconSpan.textContent = tab.icon;
+    }
+  });
+}
+
+function renderSectionsBar() {
+  if (!sectionTabs) return;
+  if (!state.activeTabId) state.activeTabId = "all";
+  const hasCurrentSection =
+    state.activeTabId === "all" ||
+    state.tabs.some((s) => s && s.id === state.activeTabId);
+  if (!hasCurrentSection) {
+    state.activeTabId = state.tabs[0]?.id || "all";
+    state.currentSectionId = state.activeTabId;
+  }
+
   sectionTabs.innerHTML = "";
 
-  const baseOrder = ["all", "inbox", "common-prompts", "black-skies", "errors", "misc"];
-  const extras = state.sections.map((s) => s.id).filter((id) => !baseOrder.includes(id));
-  const order = [...baseOrder, ...extras];
+  const allTab = document.createElement("div");
+  allTab.className = "section-pill";
+  allTab.textContent = "All";
+  allTab.dataset.sectionId = "all";
+  if (state.activeTabId === "all") allTab.classList.add("section-pill--active");
+  allTab.onclick = () => setCurrentSection("all");
+  allTab.oncontextmenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  sectionTabs.appendChild(allTab);
 
-  order.forEach((id) => {
-    const sec = state.sections.find((s) => s.id === id);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "section-pill";
+  state.tabs.forEach((section) => {
+    if (!section || !section.id) return;
+    const locked = !!section.locked;
+    const tabEl = document.createElement("div");
+    tabEl.dataset.sectionId = section.id;
+    tabEl.className = "section-pill";
+    if (section.id === state.activeTabId) tabEl.classList.add("section-pill--active");
+    if (locked) tabEl.classList.add("section-pill--locked");
+    if (dragHoverSectionId === section.id) tabEl.classList.add("section-pill--dragover");
+    tabEl.title = section.exportFolder || section.exportPath || "";
+    if (section.color) {
+      tabEl.style.backgroundColor = section.color;
+      tabEl.style.borderColor = section.color;
+      tabEl.style.color = "#fff";
+      tabEl.classList.add("section-pill--colored");
+    }
+    tabEl.setAttribute("draggable", "true");
 
-    if (state.currentSectionId === id) btn.classList.add("section-pill--active");
-    if (id !== "all" && lockedSections.has(id)) btn.classList.add("section-pill--locked");
+    const pillContent = document.createElement("div");
+    pillContent.className = "section-pill__content";
 
-    const labelSpan = document.createElement("span");
-    labelSpan.textContent = sec?.name || sectionLabel(id);
-    btn.appendChild(labelSpan);
-
-    if (id !== "all") {
-      const lockSpan = document.createElement("span");
-      lockSpan.className = "section-pill__lock";
-      lockSpan.textContent = lockedSections.has(id) ? "" : "";
-      lockSpan.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (lockedSections.has(id)) lockedSections.delete(id);
-        else lockedSections.add(id);
-
-        if (lockSectionCheckbox && state.currentSectionId === id) {
-          lockSectionCheckbox.checked = lockedSections.has(id);
+    if (state.editingSectionId === section.id) {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = state.renameDraft || section.label || sectionLabel(section.id);
+      input.className = "section-pill__rename";
+      input.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          await commitRename(section.id, input.value);
+        } else if (e.key === "Escape") {
+          cancelRename();
         }
-        if (api.setSectionLocked) api.setSectionLocked(id, lockedSections.has(id));
-        renderSections();
-      });
-      btn.appendChild(lockSpan);
+      };
+      input.onblur = async () => {
+        if (state.editingSectionId === section.id) {
+          await commitRename(section.id, input.value);
+        }
+      };
+      setTimeout(() => input.focus(), 0);
+      pillContent.appendChild(input);
+    } else {
+    if (section.icon) {
+      const iconSpan = document.createElement("span");
+      iconSpan.className = "section-pill__icon";
+      iconSpan.textContent = section.icon;
+      pillContent.appendChild(iconSpan);
     }
 
-    btn.addEventListener("click", () => {
-      setCurrentSection(id);
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = section.label || sectionLabel(section.id);
+    pillContent.appendChild(nameSpan);
+
+    if (section.exportPath) {
+      const exportIcon = document.createElement("span");
+      exportIcon.className = "section-pill__folder";
+      exportIcon.textContent = "\u{1F4C1}";
+      pillContent.appendChild(exportIcon);
+    }
+    }
+    tabEl.appendChild(pillContent);
+
+    const lockIcon = document.createElement("span");
+    lockIcon.className = "section-pill__lock";
+    lockIcon.textContent = locked ? "\uD83D\uDD12" : "\uD83D\uDD13";
+    lockIcon.title = locked ? "Unlock section" : "Lock section";
+    lockIcon.onclick = async (e) => {
+      e.stopPropagation();
+      const newState = !locked;
+      await updateSection(section.id, { locked: newState });
+      section.locked = newState;
+      updateDeleteButtonsLockState();
+      renderLockButtonState();
+      window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+      await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+      renderSectionsBar();
+      scheduleSaveTabsConfig();
+    };
+    pillContent.appendChild(lockIcon);
+
+    tabEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTabContextMenu(section.id, e.pageX, e.pageY);
+    });
+    tabEl.onclick = () => setCurrentSection(section.id);
+    tabEl.ondblclick = async () => {
+      startInlineRename(section.id);
+    };
+
+    tabEl.addEventListener("dragstart", (e) => {
+      startTabReorder(section.id);
+      dragHoverSectionId = section.id;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", section.id);
+    });
+    tabEl.addEventListener("dragenter", (e) => {
+      if (draggingClipId) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      dragHoverSectionId = section.id;
+      tabEl.classList.add("section-pill--dragover");
+    });
+    tabEl.addEventListener("dragover", (e) => {
+      if (draggingClipId) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    });
+    tabEl.addEventListener("dragleave", () => {
+      tabEl.classList.remove("section-pill--dragover");
+    });
+    tabEl.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      tabEl.classList.remove("section-pill--dragover");
+      if (draggingClipId) {
+        await moveClipToTab(draggingClipId, section.id);
+        draggingClipId = null;
+        return;
+      }
+      finishTabReorder(section.id);
+    });
+    tabEl.addEventListener("dragend", () => {
+      dragHoverSectionId = null;
+      renderSectionsBar();
     });
 
-    sectionTabs.appendChild(btn);
+    sectionTabs.appendChild(tabEl);
   });
 
-  // add-tab after built-ins
-  const addTab = document.createElement("button");
-  addTab.id = "addTabBtn";
-  addTab.className = "section-pill add-tab";
-  addTab.title = "Add Tab";
+  const addTab = document.createElement("div");
+  addTab.id = "addTabButton";
+  addTab.className = "add-tab";
   addTab.textContent = "+ Add Tab";
-  addTab.addEventListener("click", async () => {
-    const name = window.prompt("New section name?");
-    if (!name) return;
-    const created = await api.createSection(name);
-    if (created && created.id) {
-      state.currentSectionId = created.id;
-    }
-    await refreshData();
-    renderLockButtonState();
-  });
+  addTab.onclick = handleCreateTab;
   sectionTabs.appendChild(addTab);
 
+  const activePill = sectionTabs.querySelector(".section-pill--active");
+  if (activePill && typeof activePill.scrollIntoView === "function") {
+    activePill.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }
+}
+
+function startTabReorder(sectionId) {
+  draggingSectionId = sectionId;
+}
+
+async function finishTabReorder(targetSectionId) {
+  const sourceId = draggingSectionId;
+  draggingSectionId = null;
+  const fromIndex = state.sections.findIndex((s) => s.id === sourceId);
+  if (!sourceId || fromIndex === -1 || sourceId === targetSectionId) {
+    renderSectionsBar();
+    return;
+  }
+
+  const toIndex = targetSectionId
+    ? state.sections.findIndex((s) => s.id === targetSectionId)
+    : state.sections.length - 1;
+
+  const [moved] = state.sections.splice(fromIndex, 1);
+  if (toIndex >= 0) {
+    state.sections.splice(toIndex, 0, moved);
+  } else {
+    state.sections.push(moved);
+  }
+  const [movedTab] = state.tabs.splice(fromIndex, 1);
+  if (toIndex >= 0) state.tabs.splice(toIndex, 0, movedTab);
+  state.tabs.forEach((t, idx) => (t.order = idx));
+
+  try {
+    await window.api.invoke("save-section-order", state.sections.map((s) => ({ id: s.id, name: s.name })));
+  } catch (err) {
+    console.error("[SnipBoard] saveSectionOrder failed:", err);
+  }
+
+  renderSectionsBar();
+  syncSectionsFromTabs();
+  scheduleSaveTabsConfig();
+}
+
+function closeTabContextMenu() {
+  if (!tabContextMenu) return;
+  tabContextMenu.style.display = "none";
+}
+
+function openTabContextMenu(sectionId, x, y) {
+  const menu = document.getElementById("tabContextMenu");
+  if (!menu) return;
+  menu.dataset.sectionId = sectionId;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.style.display = "block";
+}
+
+function openSchemaConfigurator(sectionId) {
+  const tab = state.tabs.find((t) => t.id === sectionId);
+  if (!tab) return;
+  const schemaSet = new Set(Array.isArray(tab.schema) && tab.schema.length ? tab.schema : DEFAULT_SCHEMA);
+  const existing = document.getElementById("schemaConfigOverlay");
+  if (existing) existing.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "schemaConfigOverlay";
+  overlay.style.position = "fixed";
+  overlay.style.top = "0";
+  overlay.style.left = "0";
+  overlay.style.width = "100vw";
+  overlay.style.height = "100vh";
+  overlay.style.background = "rgba(0,0,0,0.35)";
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  overlay.style.zIndex = "99999";
+
+  const panel = document.createElement("div");
+  panel.className = "configure-fields-modal";
+  panel.style.background = "#fff";
+  panel.style.padding = "16px";
+  panel.style.borderRadius = "10px";
+  panel.style.minWidth = "260px";
+  panel.style.boxShadow = "0 8px 20px rgba(0,0,0,0.25)";
+
+  const header = document.createElement("div");
+  header.textContent = "Configure Fields";
+  header.style.fontWeight = "700";
+  header.style.marginBottom = "12px";
+  panel.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "configure-fields-body";
+
+  FIELD_OPTIONS.forEach((field) => {
+    const row = document.createElement("div");
+    row.className = "configure-fields-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = schemaSet.has(field);
+    cb.onchange = async () => {
+      if (cb.checked) schemaSet.add(field);
+      else schemaSet.delete(field);
+      if (!schemaSet.size) {
+        schemaSet.add(field);
+        cb.checked = true;
+      }
+      tab.schema = Array.from(schemaSet);
+      window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+      await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+      applySchemaVisibility(tab.schema);
+      renderEditor();
+    };
+
+    const text = document.createElement("span");
+    text.textContent = field;
+    row.appendChild(cb);
+    row.appendChild(text);
+    body.appendChild(row);
+  });
+
+  panel.appendChild(body);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.textContent = "Close";
+  closeBtn.style.marginTop = "10px";
+  closeBtn.onclick = () => overlay.remove();
+  panel.appendChild(closeBtn);
+
+  overlay.appendChild(panel);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+}
+
+document.addEventListener("click", () => {
+  const menu = document.getElementById("tabContextMenu");
+  if (menu) menu.style.display = "none";
+});
+document.addEventListener("contextmenu", (e) => {
+  if (!tabContextMenu) return;
+  const within = e.target && tabContextMenu.contains(e.target);
+  if (within) e.stopPropagation();
+});
+
+function startInlineRename(sectionId) {
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (!sec || sec.locked) return;
+  state.editingSectionId = sectionId;
+  state.renameDraft = sec.name || "";
+  renderSectionsBar();
+}
+
+async function commitRename(sectionId, value) {
+  const name = (value || "").trim();
+  if (!name) {
+    cancelRename();
+    return;
+  }
+  await renameSection(sectionId, name);
+  const tab = state.tabs.find((t) => t.id === sectionId);
+  if (tab) tab.label = name;
+  state.sections = tabsToSections(state.tabs);
+  state.editingSectionId = null;
+  state.renameDraft = "";
+  renderSectionsBar();
+  scheduleSaveTabsConfig();
+}
+
+function cancelRename() {
+  state.editingSectionId = null;
+  state.renameDraft = "";
+  renderSectionsBar();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (renameModal && renameModal.classList.contains("is-open")) renameModal.classList.remove("is-open");
+    if (colorModal && colorModal.classList.contains("is-open")) colorModal.classList.remove("is-open");
+    if (iconModal && iconModal.classList.contains("is-open")) iconModal.classList.remove("is-open");
+    cancelRename();
+  }
+});
+
+async function toggleLockSection(sectionId) {
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (!sec) return;
+  const next = !sec.locked;
+  await updateSection(sectionId, { locked: next });
+  sec.locked = next;
+  const tab = state.tabs.find((t) => t.id === sectionId);
+  if (tab) tab.locked = next;
+  renderSectionsBar();
   updateDeleteButtonsLockState();
   renderLockButtonState();
+  scheduleSaveTabsConfig();
 }
+
+async function deleteSection(sectionId) {
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (protectedSections.has(sectionId) || (sec && sec.locked)) return;
+  const confirmDelete = window.confirm("Delete this section and its clips?");
+  if (!confirmDelete) return;
+  await window.api.invoke("delete-section", sectionId);
+  state.tabs = state.tabs.filter((t) => t.id !== sectionId);
+  syncSectionsFromTabs();
+  if (state.currentSectionId === sectionId) state.currentSectionId = "all";
+  state.activeTabId = state.currentSectionId;
+  renderSectionsBar();
+  renderClipList();
+  updateExportPathDisplay();
+  scheduleSaveTabsConfig();
+}
+
+const tabContextMenuEl = document.getElementById("tabContextMenu");
+if (tabContextMenuEl) {
+  tabContextMenuEl.addEventListener("click", async (e) => {
+    const action = e.target && e.target.dataset ? e.target.dataset.action : null;
+    if (!action) return;
+    const sectionId = tabContextMenuEl.dataset.sectionId;
+    switch (action) {
+      case "rename":
+        startInlineRename(sectionId);
+        break;
+      case "color":
+        const tab = state.tabs.find((t) => t.id === sectionId);
+        if (tab) {
+          const color = await window.ui.openColorPicker(tab.color || "#ffffff");
+          if (color) {
+            tab.color = color;
+            const savedTab = window.tabsState?.tabs?.find((t) => t.id === sectionId);
+            if (savedTab) savedTab.color = color;
+            window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+            await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+            renderTabs();
+          }
+        }
+        break;
+      case "schema":
+        openSchemaConfigurator(sectionId);
+        break;
+      case "icon":
+        await selectTabIcon(sectionId);
+        break;
+      case "folder":
+        await assignExportFolder(sectionId);
+        break;
+      case "lock":
+        await toggleLockSection(sectionId);
+        break;
+      case "delete":
+        await deleteSection(sectionId);
+        break;
+      default:
+        break;
+    }
+    tabContextMenuEl.style.display = "none";
+  });
+}
+
+if (colorSaveBtn) {
+  colorSaveBtn.onclick = async () => {
+    const targetId = state.pendingColorSection;
+    if (!targetId) {
+      if (colorModal) colorModal.classList.remove("is-open");
+      return;
+    }
+  const color = colorInput.value || "";
+  await updateSection(targetId, { color });
+  const sec = state.sections.find((s) => s.id === targetId);
+  if (sec) sec.color = color;
+  const tab = state.tabs.find((t) => t.id === targetId);
+  if (tab) tab.color = color;
+  const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
+  if (targetTab) targetTab.color = color;
+  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  renderTabs();
+  if (colorModal) colorModal.classList.remove("is-open");
+  state.pendingColorSection = null;
+  renderSectionsBar();
+  scheduleSaveTabsConfig();
+};
+}
+if (colorCancelBtn) {
+  colorCancelBtn.onclick = () => {
+    state.pendingColorSection = null;
+    if (colorModal) colorModal.classList.remove("is-open");
+  };
+}
+
+if (iconSaveBtn) {
+  iconSaveBtn.onclick = async () => {
+    const targetId = state.pendingIconSection;
+    if (!targetId) {
+      if (iconModal) iconModal.classList.remove("is-open");
+      return;
+    }
+  await updateSection(targetId, { icon: state.selectedIcon || "" });
+  const sec = state.sections.find((s) => s.id === targetId);
+  if (sec) sec.icon = state.selectedIcon || "";
+  const tab = state.tabs.find((t) => t.id === targetId);
+  if (tab) tab.icon = state.selectedIcon || "";
+  const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
+  if (targetTab) targetTab.icon = state.selectedIcon || "";
+  if (iconModal) iconModal.classList.remove("is-open");
+  state.pendingIconSection = null;
+  renderSectionsBar();
+  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  renderTabs();
+  scheduleSaveTabsConfig();
+};
+}
+if (iconCancelBtn) {
+  iconCancelBtn.onclick = () => {
+    state.pendingIconSection = null;
+    if (iconModal) iconModal.classList.remove("is-open");
+  };
+}
+
 
 function getSelectedClipIds() {
   const checkboxes = document.querySelectorAll(".clip-row input[type=checkbox]");
@@ -312,6 +1160,11 @@ function getSelectedClipIds() {
 }
 
 async function unifiedDelete(ids) {
+  const activeTab = window.tabsState?.tabs?.find(t => t.id === state.currentSectionId);
+  if (activeTab?.locked) {
+    console.warn("Tab is locked. Delete blocked.");
+    return; 
+  }
   const locked = isSectionLocked(state.currentSectionId);
   if (locked) {
     alert("This section is locked.");
@@ -330,27 +1183,17 @@ async function unifiedDelete(ids) {
     targets.length === 1 ? "Delete this clip?" : `Delete ${targets.length} selected clips?`;
   if (!window.confirm(confirmMsg)) return;
 
-  let res;
-  if (api.deleteClips) {
-    res = await api.deleteClips(targets);
-  } else {
-    res = { blocked: [] };
-    for (const id of targets) {
-      const single = await api.deleteClip(id);
-      if (single && single.blocked) {
-        res.blocked.push(id);
-      }
-    }
-  }
+  const res = await window.api.invoke(IPC.DELETE_CLIPS, targets);
 
   if (res && (res.blocked === true || (Array.isArray(res.blocked) && res.blocked.length))) {
     alert("Unlock section first.");
     return;
   }
 
-  const data = await api.getData();
-  state.sections = data.sections || [];
+  const data = await window.api.invoke(IPC.GET_DATA);
+  state.sections = normalizeSections(data.sections || []);
   state.clips = data.clips || [];
+  updateSearchIndex(state.clips);
   if (targets.includes(state.currentClipId)) {
     state.currentClipId = null;
   }
@@ -375,9 +1218,8 @@ function renderClipList() {
       return false;
     }
     if (searchTerm) {
-      const titleMatch = (clip.title || "").toLowerCase().includes(searchTerm);
-      const textMatch = (clip.text || "").toLowerCase().includes(searchTerm);
-      if (!titleMatch && !textMatch) return false;
+      const idx = searchIndex.get(clip.id) || `${clip.title || ""} ${clip.text || ""} ${(clip.tags || []).join(" ")}`.toLowerCase();
+      if (!idx.includes(searchTerm)) return false;
     }
     if (tagTerm) {
       const tags = tagTerm.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
@@ -400,6 +1242,20 @@ function renderClipList() {
 
     const thumb = document.createElement("div");
     thumb.className = "clip-row__thumb";
+    if (Array.isArray(clip.screenshots) && clip.screenshots.length) {
+      const firstShot = clip.screenshots[0];
+      window.api.invoke("check-screenshot-path", firstShot).then((res) => {
+        if (!res || !res.ok || !res.exists) return;
+        const img = document.createElement("img");
+        img.src = "file:///" + res.fullPath.replace(/\\/g, "/");
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.objectFit = "cover";
+        img.style.borderRadius = "8px";
+        thumb.innerHTML = "";
+        thumb.appendChild(img);
+      }).catch(() => {});
+    }
 
     const title = document.createElement("div");
     title.className = "clip-row__title";
@@ -408,6 +1264,17 @@ function renderClipList() {
     row.appendChild(checkbox);
     row.appendChild(thumb);
     row.appendChild(title);
+    row.draggable = true;
+    row.addEventListener("dragstart", (e) => {
+      draggingClipId = clip.id;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", clip.id);
+      }
+    });
+    row.addEventListener("dragend", () => {
+      draggingClipId = null;
+    });
 
     row.addEventListener("click", () => {
       state.currentClipId = clip.id;
@@ -430,8 +1297,24 @@ function renderClipList() {
   });
 }
 
+async function moveClipToTab(clipId, targetTabId) {
+  const clip = state.clips.find((c) => c.id === clipId);
+  if (!clip) return;
+  clip.sectionId = targetTabId;
+  state.currentSectionId = targetTabId;
+  state.activeTabId = targetTabId;
+  const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
+  await refreshData(saved?.id || clip.id);
+  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  renderSectionsBar();
+}
+
 async function renderEditor() {
   const clip = getCurrentClip();
+  const activeTab = getActiveTab();
+  const schema = activeTab && Array.isArray(activeTab.schema) && activeTab.schema.length ? activeTab.schema : DEFAULT_SCHEMA;
+  applySchemaVisibility(schema);
 
   if (!clip) {
     textInput.value = "";
@@ -458,7 +1341,6 @@ async function renderEditor() {
 
   await renderScreenshots(clip);
 
-  // section dropdown
   sectionSelect.innerHTML = "";
   state.sections.forEach(sec => {
     const opt = document.createElement("option");
@@ -467,24 +1349,106 @@ async function renderEditor() {
     if (sec.id === clip.sectionId) opt.selected = true;
     sectionSelect.appendChild(opt);
   });
-  const locked = isSectionLocked(state.currentSectionId);
-  sectionSelect.disabled = locked;
-  textInput.disabled = locked;
-  titleInput.disabled = locked;
-  notesInput.disabled = locked;
-  tagsInput.disabled = locked;
-  sourceUrlInput.disabled = locked;
-  sourceTitleInput.disabled = locked;
+  sectionSelect.disabled = false;
+  textInput.disabled = false;
+  titleInput.disabled = false;
+  notesInput.disabled = false;
+  tagsInput.disabled = false;
+  sourceUrlInput.disabled = false;
+  sourceTitleInput.disabled = false;
 }
 
 // ===============================================================
 // EVENT HANDLERS
 // ===============================================================
 
+async function handleCreateTab() {
+  const baseName = "New Tab";
+  const newSection = await window.api.invoke(IPC.CREATE_SECTION, baseName);
+  const normalized = {
+    id: newSection.id,
+    name: newSection.name || baseName,
+    locked: !!newSection.locked,
+    exportFolder: newSection.exportFolder || "",
+    exportPath: newSection.exportPath || "",
+    color: newSection.color || "",
+    icon: newSection.icon || "",
+    order: (state.tabs[state.tabs.length - 1]?.order || state.tabs.length) + 1,
+    schema: DEFAULT_SCHEMA.slice(),
+  };
+  state.tabs.push(normalized);
+  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  syncSectionsFromTabs();
+  state.currentSectionId = normalized.id;
+  state.activeTabId = normalized.id;
+  renderSectionsBar();
+  renderClipList();
+  updateExportPathDisplay();
+  updateDeleteButtonsLockState();
+  renderLockButtonState();
+  scheduleSaveTabsConfig();
+  await syncTabsToBackend();
+}
+
+async function assignExportFolder(sectionId) {
+  const result = await window.api.invoke(IPC.CHOOSE_EXPORT_FOLDER);
+  const folder = result && result.ok === false ? null : (result && result.path) || result;
+  if (!folder) return;
+  await updateSection(sectionId, { exportFolder: folder, exportPath: folder });
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (sec) {
+    sec.exportFolder = folder;
+    sec.exportPath = folder;
+  }
+  const stateTab = state.tabs.find((t) => t.id === sectionId);
+  if (stateTab) stateTab.exportFolder = folder;
+  const tabId = sectionId;
+  const selectedPath = folder;
+  const targetTab = (window.tabsState && window.tabsState.tabs) ? window.tabsState.tabs.find(t => t.id === tabId) : null;
+  if (targetTab) {
+    targetTab.exportPath = selectedPath;
+  }
+  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  renderSectionsBar();
+  updateExportPathDisplay();
+  scheduleSaveTabsConfig();
+}
+
+async function selectTabColor(sectionId) {
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (!sec || !colorModal || !colorInput) return;
+  state.pendingColorSection = sectionId;
+  colorInput.value = sec.color || "#2f6bff";
+  colorModal.classList.add("is-open");
+}
+
+async function selectTabIcon(sectionId) {
+  const sec = state.sections.find((s) => s.id === sectionId);
+  if (!sec || !iconModal || !iconChoicesContainer) return;
+  state.pendingIconSection = sectionId;
+  state.selectedIcon = sec.icon || "";
+  iconChoicesContainer.innerHTML = "";
+  iconChoices.forEach((choice) => {
+    const item = document.createElement("div");
+    item.className = "icon-choice" + (state.selectedIcon === choice.icon ? " selected" : "");
+    item.dataset.icon = choice.icon;
+    item.textContent = `${choice.icon} ${choice.label}`;
+    item.onclick = () => {
+      state.selectedIcon = choice.icon;
+      iconChoicesContainer.querySelectorAll(".icon-choice").forEach((c) => c.classList.remove("selected"));
+      item.classList.add("selected");
+    };
+    iconChoicesContainer.appendChild(item);
+  });
+  iconModal.classList.add("is-open");
+}
+
 async function refreshData(selectId = null) {
-  const data = await api.getData();
-  state.sections = data.sections || [];
+  const data = await window.api.invoke(IPC.GET_DATA);
   state.clips = data.clips || [];
+  updateSearchIndex(state.clips);
   syncLockedSectionsFromState();
   if (selectId) {
     state.currentClipId = selectId;
@@ -503,25 +1467,67 @@ function currentSectionIdOrInbox() {
   return "inbox";
 }
 
-saveClipBtn.onclick = async () => {
-  const clip = getCurrentClip();
-  if (!clip) return;
+function bindHandlersOnce() {
+  if (handlersBound) return;
+  handlersBound = true;
+  if (setExportBtn) setExportBtn.style.display = "none";
+  if (clearExportBtn) clearExportBtn.style.display = "none";
+  const exportActions = document.querySelector(".export-actions");
+  if (exportActions) exportActions.style.display = "none";
 
-  clip.text = textInput.value;
-  clip.title = titleInput.value;
-  clip.notes = notesInput.value;
-  clip.tags = tagsInput.value.split(",").map(s => s.trim()).filter(Boolean);
-  clip.sectionId = sectionSelect.value || null;
-  clip.sourceUrl = sourceUrlInput.value;
-  clip.sourceTitle = sourceTitleInput.value;
+  if (saveClipBtn) {
+    saveClipBtn.onclick = async () => {
+      const clip = getCurrentClip();
+      if (!clip) return;
 
-  state.currentSectionId = clip.sectionId || "all";
-  const saved = await api.saveClip(clip);
-  await refreshData(saved.id);
-};
+      clip.text = textInput.value;
+      clip.title = titleInput.value;
+      clip.notes = notesInput.value;
+      clip.tags = tagsInput.value.split(",").map(s => s.trim()).filter(Boolean);
+      clip.sectionId = sectionSelect.value || null;
+      clip.sourceUrl = sourceUrlInput.value;
+      clip.sourceTitle = sourceTitleInput.value;
 
+      state.currentSectionId = clip.sectionId || "all";
+      const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
+      await refreshData(saved.id);
+    };
+  }
+
+  if (newClipBtn) newClipBtn.onclick = createClipboardClip;
+  if (newSnipBtn) newSnipBtn.onclick = createScreenSnip;
+  if (addShotBtn) addShotBtn.onclick = addScreenshotToCurrent;
+  if (deleteClipBtn) deleteClipBtn.onclick = async () => { await unifiedDelete(getSelectedClipIds()); };
+  if (deleteSelectedBtn) deleteSelectedBtn.onclick = async () => { await unifiedDelete(getSelectedClipIds()); };
+  if (listDeleteBtn) listDeleteBtn.onclick = async () => { await unifiedDelete(getSelectedClipIds()); };
+  if (listAddBtn) listAddBtn.onclick = createClipboardClip;
+
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      state.searchText = searchInput.value || "";
+      renderClipList();
+    });
+  }
+  if (tagFilterInput) {
+    tagFilterInput.addEventListener("input", () => {
+      state.tagFilter = tagFilterInput.value || "";
+      renderClipList();
+    });
+  }
+
+  if (openSourceBtn) {
+    openSourceBtn.onclick = () => {
+      const clip = getCurrentClip();
+      if (!clip || !clip.sourceUrl) return;
+      window.api.invoke(IPC.OPEN_URL, clip.sourceUrl);
+    };
+  }
+
+  if (setExportBtn) setExportBtn.onclick = null;
+  if (clearExportBtn) clearExportBtn.onclick = null;
+}
 async function createClipboardClip() {
-  const text = await api.getClipboardText();
+  const text = await window.api.invoke("get-clipboard-text");
   const fallbackTitle = "Clipboard Snip";
   const clip = {
     id: null,
@@ -534,18 +1540,18 @@ async function createClipboardClip() {
     capturedAt: Date.now(),
   };
   state.currentSectionId = clip.sectionId;
-  const saved = await api.saveClip(clip);
+  const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
   await refreshData(saved.id);
 }
 
 async function createScreenSnip() {
   try {
-    const capture = await api.captureScreen();
+    const capture = await window.api.invoke(IPC.CAPTURE_SCREEN);
     if (!capture || !capture.dataUrl) {
       console.warn("[SnipBoard] captureScreen returned empty payload");
       return;
     }
-    const files = await api.saveScreenshot([{ dataUrl: capture.dataUrl }]);
+    const files = await window.api.invoke(IPC.SAVE_SCREENSHOT, [{ dataUrl: capture.dataUrl }]);
     const filenames = (files || []).map((f) => f.filename);
     const clip = {
       id: null,
@@ -558,7 +1564,7 @@ async function createScreenSnip() {
       capturedAt: Date.now(),
     };
   state.currentSectionId = clip.sectionId;
-  const saved = await api.saveClip(clip);
+  const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
   await refreshData(saved.id);
   } catch (err) {
     console.error("[SnipBoard] createScreenSnip failed:", err);
@@ -569,54 +1575,17 @@ async function addScreenshotToCurrent() {
   const clip = getCurrentClip();
   if (!clip) return;
   try {
-    const capture = await api.captureScreen();
+    const capture = await window.api.invoke(IPC.CAPTURE_SCREEN);
     if (!capture || !capture.dataUrl) return;
-    const files = await api.saveScreenshot([{ dataUrl: capture.dataUrl }]);
+    const files = await window.api.invoke(IPC.SAVE_SCREENSHOT, [{ dataUrl: capture.dataUrl }]);
     const filenames = (files || []).map((f) => f.filename);
     clip.screenshots = [...(clip.screenshots || []), ...filenames];
-    const saved = await api.saveClip(clip);
+    const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
     await refreshData(saved.id);
   } catch (err) {
     console.error("[SnipBoard] addScreenshotToCurrent failed:", err);
   }
 }
-
-newClipBtn.onclick = createClipboardClip;
-newSnipBtn.onclick = createScreenSnip;
-addShotBtn.onclick = addScreenshotToCurrent;
-deleteClipBtn.onclick = async () => {
-  await unifiedDelete(getSelectedClipIds());
-};
-listAddBtn.onclick = createClipboardClip;
-
-searchInput.addEventListener("input", () => {
-  state.searchText = searchInput.value || "";
-  renderClipList();
-});
-tagFilterInput.addEventListener("input", () => {
-  state.tagFilter = tagFilterInput.value || "";
-  renderClipList();
-});
-
-openSourceBtn.onclick = () => {
-  const clip = getCurrentClip();
-  if (!clip || !clip.sourceUrl) return;
-  api.openUrl(clip.sourceUrl);
-};
-
-setExportBtn.onclick = async () => {
-  if (!state.currentSectionId || state.currentSectionId === "all") return;
-  const result = await api.chooseExportFolder();
-  if (!result || !result.ok || !result.path) return;
-  await api.setSectionExportPath(state.currentSectionId, result.path);
-  await refreshData(state.currentClipId);
-};
-
-clearExportBtn.onclick = async () => {
-  if (!state.currentSectionId || state.currentSectionId === "all") return;
-  await api.setSectionExportPath(state.currentSectionId, "");
-  await refreshData(state.currentClipId);
-};
 
 // ===============================================================
 // INITIAL LOAD
@@ -624,37 +1593,50 @@ clearExportBtn.onclick = async () => {
 
 async function init() {
   try {
-    const data = await api.getData();
-    state.sections = data.sections || [];
+    const data = await window.api.invoke(IPC.GET_DATA);
+    const tabsConfig = await window.api.invoke(IPC.LOAD_TABS);
+    const tabsFromConfig = normalizeTabs(tabsConfig?.tabs);
+    const fallbackTabs = normalizeTabs(sectionsToTabs(data.sections || []));
+    state.tabs = tabsFromConfig.length ? tabsFromConfig : fallbackTabs;
+    state.sections = tabsToSections(state.tabs);
+    state.activeTabId = tabsConfig?.activeTabId || state.tabs[0]?.id || "all";
+    state.currentSectionId = state.activeTabId;
     state.clips = data.clips || [];
+    updateSearchIndex(state.clips);
     syncLockedSectionsFromState();
     lastPollSignature = computeSignature(state.clips);
-    state.searchText = searchInput.value || "";
-    state.tagFilter = tagFilterInput.value || "";
+    state.searchText = searchInput ? searchInput.value || "" : "";
+    state.tagFilter = tagFilterInput ? tagFilterInput.value || "" : "";
 
-    renderSections();
+    renderSectionsBar();
+    window.tabsState = {
+      tabs: state.tabs,
+      activeTabId: state.activeTabId || "all",
+    };
+    renderTabs();
     renderClipList();
     await renderEditor();
     updateExportPathDisplay();
     updateDeleteButtonsLockState();
     renderLockButtonState();
+    bindHandlersOnce();
+    await syncTabsToBackend();
   } catch (err) {
     console.error("[SnipBoard] init failed:", err);
   }
 
-  // Poll backend for changes
   setInterval(async () => {
     try {
-      const data = await api.getData();
+      const data = await window.api.invoke(IPC.GET_DATA);
       const sig = computeSignature(data.clips || []);
 
       if (sig !== lastPollSignature) {
-        state.sections = data.sections || [];
         state.clips = data.clips || [];
+        updateSearchIndex(state.clips);
         syncLockedSectionsFromState();
         lastPollSignature = sig;
         pruneSelected();
-        renderSections();
+        renderSectionsBar();
         renderClipList();
         await renderEditor();
         updateExportPathDisplay();
@@ -668,6 +1650,9 @@ async function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+if (document.readyState !== "loading") {
+  init();
+}
 document.addEventListener("DOMContentLoaded", () => {
   const shotModal = document.getElementById("screenshotModal");
   if (shotModal) {
@@ -677,4 +1662,104 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
+
+  const tabsWrapper = sectionTabs && sectionTabs.parentElement;
+  if (tabsWrapper && sectionTabs && !document.getElementById("tabScrollLeft") && !document.getElementById("tabScrollRight")) {
+    tabsWrapper.style.position = "relative";
+    sectionTabs.style.overflowX = "auto";
+    sectionTabs.style.whiteSpace = "nowrap";
+
+    const scrollButton = (dir) => {
+      const btn = document.createElement("button");
+      btn.className = "tab-scroll-btn";
+      btn.id = dir === "left" ? "tabScrollLeft" : "tabScrollRight";
+      btn.textContent = dir === "left" ? "<" : ">";
+      btn.style.position = "absolute";
+      btn.style.top = "50%";
+      btn.style.transform = "translateY(-50%)";
+      btn.style[dir === "left" ? "left" : "right"] = "4px";
+      btn.onclick = () => {
+        sectionTabs.scrollBy({ left: dir === "left" ? -150 : 150, behavior: "smooth" });
+      };
+      tabsWrapper.appendChild(btn);
+    };
+    scrollButton("left");
+    scrollButton("right");
+  }
 });
+
+
+
+
+
+
+
+
+async function newSectionCreated(name) {
+  const base = (name || "").trim();
+  if (!base) return;
+  try {
+    const created = await window.api.invoke(IPC.CREATE_SECTION, base);
+    if (created && created.id) {
+      state.sections.push({
+        id: created.id,
+        name: created.name || base,
+        locked: !!created.locked,
+        exportPath: created.exportPath || "",
+        exportFolder: created.exportFolder || created.exportPath || "",
+        color: created.color || "",
+        icon: created.icon || "",
+      });
+      state.currentSectionId = created.id;
+    } else {
+      const id = base.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "");
+      state.sections.push({ id: id || base, name: base, locked: false, exportPath: "", exportFolder: "", color: "", icon: "" });
+      state.currentSectionId = id || base;
+    }
+    renderSections();
+    renderClipList();
+  } catch (err) {
+    console.error("[SnipBoard] newSectionCreated failed:", err);
+  }
+}
+
+async function renameSection(id, newName) {
+  const name = (newName || "").trim();
+  if (!id || !name) return;
+  try {
+    const updated = await window.api.invoke(IPC.RENAME_SECTION, { id, name });
+    if (updated && updated.section) {
+      const idx = state.sections.findIndex((s) => s.id === id);
+      if (idx >= 0) state.sections[idx] = updated.section;
+    } else {
+      const target = state.sections.find((s) => s.id === id);
+      if (target) target.name = name;
+    }
+    const tab = state.tabs.find((t) => t.id === id);
+    if (tab) tab.label = name;
+    state.sections = tabsToSections(state.tabs);
+    scheduleSaveTabsConfig();
+    renderSections();
+    window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+    await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+  } catch (err) {
+    console.error("[SnipBoard] renameSection failed:", err);
+  }
+}
+
+
+
+
+
+function saveTabsState() {
+  window.tabsState = {
+    tabs: state.tabs.map((t, idx) => ({
+      ...t,
+      exportPath: t.exportPath || t.exportFolder || "",
+      exportFolder: t.exportFolder || t.exportPath || "",
+      order: Number.isFinite(t.order) ? t.order : idx,
+    })),
+    activeTabId: state.activeTabId || "all",
+  };
+  window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+}

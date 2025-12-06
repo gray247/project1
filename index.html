@@ -60,7 +60,6 @@
           <div class="list-header">
             <div class="list-title">Clips</div>
             <div class="list-controls">
-              <button id="lockToggleBtn" class="icon-button lock-button" title="Lock this section">🔓</button>
               <button id="listAddBtn" class="pill" title="New clip in current section">+</button>
             </div>
           </div>
@@ -94,12 +93,18 @@
             <div id="screenshotContainer" class="screenshot-strip"></div>
           </div>
 
-          <div class="field-row">
-            <label>Tags</label>
-            <input id="tagsInput" />
+          <div class="field-row split tags-row">
+            <div class="tags-col">
+              <label>Tags</label>
+              <input id="tagsInput" />
+            </div>
+            <div class="captured-col">
+              <label>Captured At</label>
+              <input id="capturedAtInput" readonly />
+            </div>
           </div>
 
-          <div class="field-row split">
+          <div class="field-row split source-row">
             <div class="source-url">
               <label>Source URL</label>
               <div class="source-input">
@@ -116,11 +121,6 @@
           </div>
 
           <div class="field-row">
-            <label>Captured At</label>
-            <input id="capturedAtInput" readonly />
-          </div>
-
-          <div class="field-row">
             <label>Notes</label>
             <textarea id="notesInput"></textarea>
           </div>
@@ -129,6 +129,50 @@
     </div>
 
     <script defer src="renderer.js"></script>
+    <div id="tabContextMenu" class="context-menu">
+      <ul>
+        <li data-action="rename">Rename</li>
+        <li data-action="schema">Configure Fields…</li>
+        <li data-action="color">Change Color</li>
+        <li data-action="icon">Change Icon</li>
+        <li data-action="folder">Set Export Folder</li>
+        <li data-action="lock">Lock/Unlock</li>
+        <li data-action="delete" class="danger">Delete Tab</li>
+      </ul>
+    </div>
+
+    <div id="renameModal" class="mini-modal">
+      <div class="mini-modal__content">
+        <div class="mini-modal__header">Rename Tab</div>
+        <input id="renameInput" type="text" />
+        <div class="mini-modal__actions">
+          <button id="renameCancelBtn" class="ghost">Cancel</button>
+          <button id="renameSaveBtn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="colorModal" class="mini-modal">
+      <div class="mini-modal__content">
+        <div class="mini-modal__header">Choose Color</div>
+        <input id="colorInput" type="color" />
+        <div class="mini-modal__actions">
+          <button id="colorCancelBtn" class="ghost">Cancel</button>
+          <button id="colorSaveBtn">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="iconModal" class="mini-modal">
+      <div class="mini-modal__content">
+        <div class="mini-modal__header">Choose Icon</div>
+        <div id="iconChoices" class="icon-choices"></div>
+        <div class="mini-modal__actions">
+          <button id="iconCancelBtn" class="ghost">Cancel</button>
+          <button id="iconSaveBtn">Save</button>
+        </div>
+      </div>
+    </div>
     <div id="screenshotModal" class="shot-modal">
       <div class="shot-modal-backdrop"></div>
       <div class="shot-modal-frame">
