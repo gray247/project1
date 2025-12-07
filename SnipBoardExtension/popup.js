@@ -24,8 +24,7 @@ function getActiveTab() {
 const statusLogEl = document.getElementById("statusLog");
 const healthBar = document.getElementById("healthBar");
 const healthPercent = document.getElementById("healthPercent");
-const enterSelectBtn = document.getElementById("enterSelectBtn");
-const exitSelectBtn = document.getElementById("exitSelectBtn");
+const selectedCountEl = document.getElementById("selectedCount");
 
 const MAX_TOKENS = 32000;
 const TOKEN_TO_CHAR = 4;
@@ -109,15 +108,20 @@ async function updateHealth() {
     healthBar.innerHTML = `<div style="width:${pct}%;height:100%;background:${color};transition:width 0.25s ease,background 0.25s ease;"></div>`;
   }
   if (healthPercent) healthPercent.textContent = pctStr;
+
+  chrome.runtime.sendMessage({
+    type: "SNIPBOARD_ICON_UPDATE",
+    percentage: pct,
+    color,
+  });
 }
 
 async function updateSelectedCount() {
   const { messages } = await getSelectedMessages();
-  const countEl = document.getElementById("selectedCount");
   const btn = document.getElementById("saveBtn");
 
   const count = messages.length;
-  countEl.textContent = String(count);
+  if (selectedCountEl) selectedCountEl.textContent = String(count);
 
   if (count === 0) {
     btn.disabled = true;
@@ -131,74 +135,95 @@ async function updateSelectedCount() {
   }
 }
 
-async function sendSelectMode(on) {
+async function saveMessages(messages) {
+  if (!messages || !messages.length) return;
   const tab = await getActiveTab();
   if (!tab) return;
-  await ensureContentScript(tab.id);
-  const type = on ? "SNIPBOARD_SELECT_MODE_ON" : "SNIPBOARD_SELECT_MODE_OFF";
-  await sendMessage(tab.id, { type });
+
+  const sectionId = document.getElementById("sectionSelect").value;
+  const titleInput = document.getElementById("titleInput").value;
+  const tagsInput = document.getElementById("tagsInput").value;
+
+  let title = titleInput && titleInput.trim();
+  if (!title && messages.length > 0) {
+    const first = messages[0].content || messages[0].text || "";
+    title = first.split(/\r?\n/)[0].slice(0, 80) || "ChatGPT Snip";
+  }
+
+  const tags = tagsInput
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const payload = {
+    sectionId,
+    title,
+    tags,
+    text: messages
+      .map((m) => {
+        const role = (m.role || "assistant").toUpperCase();
+        const content = m.content || m.text || "";
+        return `${role}:\n${content}`;
+      })
+      .join("\n\n"),
+    sourceUrl: tab?.url || "",
+    sourceTitle: tab?.title || "",
+    capturedAt: Date.now(),
+  };
+
+  const btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    await fetch("http://127.0.0.1:4050/add-clip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    btn.textContent = "Saved!";
+    setTimeout(() => window.close(), 800);
+  } catch (err) {
+    console.error("[SnipBoard] POST failed:", err);
+    btn.disabled = false;
+    btn.textContent = "Error";
+  }
 }
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || !msg.type) return;
+  if (msg.type === "SNIPBOARD_SELECTION_UPDATED") {
+    if (selectedCountEl) selectedCountEl.textContent = String(msg.count || 0);
+    const btn = document.getElementById("saveBtn");
+    if (btn) {
+      if ((msg.count || 0) === 0) {
+        btn.disabled = true;
+        btn.textContent = "Waiting...";
+      } else {
+        btn.disabled = false;
+        btn.textContent =
+          msg.count === 1 ? "Save 1 message to SnipBoard" : `Save ${msg.count} messages`;
+      }
+    }
+  }
+  if (msg.type === "SNIPBOARD_AUTO_OPEN_POPUP") {
+    try {
+      window.focus();
+    } catch (_) {}
+  }
+});
 
 document.addEventListener("DOMContentLoaded", () => {
   updateSelectedCount();
   updateHealth();
-
-  enterSelectBtn?.addEventListener("click", async () => {
-    await sendSelectMode(true);
-    logStatus("Select Mode activated");
-  });
-  exitSelectBtn?.addEventListener("click", async () => {
-    await sendSelectMode(false);
-    logStatus("Select Mode deactivated");
-  });
+  const selectControls = document.getElementById("selectControls");
+  if (selectControls) selectControls.style.display = "none";
 
   document.getElementById("saveBtn").addEventListener("click", async () => {
-    const { tab, messages } = await getSelectedMessages();
+    const { messages } = await getSelectedMessages();
     if (!messages.length) return;
-
-    const sectionId = document.getElementById("sectionSelect").value;
-    const titleInput = document.getElementById("titleInput").value;
-    const tagsInput = document.getElementById("tagsInput").value;
-
-    let title = titleInput && titleInput.trim();
-    if (!title && messages.length > 0) {
-      const first = messages[0].content || "";
-      title = first.split(/\r?\n/)[0].slice(0, 80) || "ChatGPT Snip";
-    }
-
-    const tags = tagsInput
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-
-    const payload = {
-      sectionId,
-      title,
-      tags,
-      text: messages.map((m) => `${m.role.toUpperCase()}:\n${m.content}`).join("\n\n"),
-      sourceUrl: tab?.url || "",
-      sourceTitle: tab?.title || "",
-      capturedAt: Date.now(),
-    };
-
-    const btn = document.getElementById("saveBtn");
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-
-    try {
-      await fetch("http://127.0.0.1:4050/add-clip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      btn.textContent = "Saved!";
-      setTimeout(() => window.close(), 800);
-    } catch (err) {
-      console.error("[SnipBoard] POST failed:", err);
-      btn.disabled = false;
-      btn.textContent = "Error";
-    }
+    await saveMessages(messages);
   });
 
   window.addEventListener("unload", async () => {

@@ -33,12 +33,11 @@
 
   let shadowHost = null;
   let shadowRoot = null;
-  let overlayEl = null;
   let highlightEl = null;
-  let selectBtn = null;
-  let exitBtn = null;
+  let selectedLayer = null;
   let modeActive = false;
   let selectedMessages = [];
+  let selectedMap = new WeakMap();
   let listenersBound = false;
 
   const readText = (node) => {
@@ -111,33 +110,6 @@
       :host {
         all: initial;
       }
-      .floating-btn {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        padding: 10px 12px;
-        background: #2563eb;
-        color: #fff;
-        border-radius: 999px;
-        font-size: 13px;
-        font-weight: 600;
-        box-shadow: 0 6px 18px rgba(0,0,0,0.18);
-        cursor: pointer;
-        border: none;
-        outline: none;
-        pointer-events: auto;
-      }
-      .floating-btn.secondary {
-        background: #6b7280;
-        right: 140px;
-      }
-      .overlay {
-        position: fixed;
-        inset: 0;
-        background: transparent;
-        pointer-events: auto;
-        cursor: crosshair;
-      }
       .highlight {
         position: fixed;
         border: 2px solid #2563eb;
@@ -146,26 +118,27 @@
         pointer-events: none;
         display: none;
       }
+      .selected-layer {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+      .selected-box {
+        position: absolute;
+        border: 2px solid #2563eb;
+        border-radius: 10px;
+        background: rgba(37,99,235,0.12);
+        pointer-events: none;
+      }
     `;
     shadowRoot.appendChild(style);
-
-    overlayEl = document.createElement("div");
-    overlayEl.className = "overlay";
-    overlayEl.style.display = "none";
 
     highlightEl = document.createElement("div");
     highlightEl.className = "highlight";
 
-    selectBtn = document.createElement("button");
-    selectBtn.className = "floating-btn";
-    selectBtn.textContent = "Select Message";
-
-    exitBtn = document.createElement("button");
-    exitBtn.className = "floating-btn secondary";
-    exitBtn.textContent = "Exit Select Mode";
-    exitBtn.style.display = "none";
-
-    shadowRoot.append(selectBtn, exitBtn, overlayEl, highlightEl);
+    selectedLayer = document.createElement("div");
+    selectedLayer.className = "selected-layer";
+    shadowRoot.append(highlightEl, selectedLayer);
   };
 
   const updateHighlight = (node) => {
@@ -182,45 +155,72 @@
     highlightEl.style.height = `${rect.height}px`;
   };
 
+  const renderSelectedHighlights = () => {
+    if (!selectedLayer) return;
+    selectedLayer.innerHTML = "";
+    selectedMessages.forEach((entry) => {
+      if (!entry.node || !document.body.contains(entry.node)) return;
+      const rect = entry.node.getBoundingClientRect();
+      const box = document.createElement("div");
+      box.className = "selected-box";
+      box.style.top = `${rect.top}px`;
+      box.style.left = `${rect.left}px`;
+      box.style.width = `${rect.width}px`;
+      box.style.height = `${rect.height}px`;
+      selectedLayer.appendChild(box);
+    });
+  };
+
+  const notifySelectionChange = (prevCount) => {
+    const count = selectedMessages.length;
+    chrome.runtime.sendMessage({ type: "SNIPBOARD_SELECTION_UPDATED", count });
+    renderSelectedHighlights();
+  };
+
+  const clearSelection = (exitMode = false) => {
+    const prevCount = selectedMessages.length;
+    selectedMessages = [];
+    selectedMap = new WeakMap();
+    renderSelectedHighlights();
+    notifySelectionChange(prevCount);
+    if (exitMode) deactivateSelectMode();
+  };
+
   const deactivateSelectMode = () => {
     modeActive = false;
-    if (overlayEl) overlayEl.style.display = "none";
     if (highlightEl) highlightEl.style.display = "none";
-    if (selectBtn) selectBtn.style.display = "block";
-    if (exitBtn) exitBtn.style.display = "none";
     removeOverlayListeners();
   };
 
   const addOverlayListeners = () => {
-    if (!overlayEl || listenersBound) return;
+    if (listenersBound) return;
     listenersBound = true;
-    overlayEl.addEventListener("mousemove", handleHover, true);
-    overlayEl.addEventListener("click", handleClick, true);
+    const target = document;
+    target.addEventListener("mousemove", handleHover, true);
+    target.addEventListener("click", handleClick, true);
+    target.addEventListener("scroll", renderSelectedHighlights, true);
     document.addEventListener("keydown", handleKeydown, true);
   };
 
   const removeOverlayListeners = () => {
-    if (!overlayEl || !listenersBound) return;
+    if (!listenersBound) return;
     listenersBound = false;
-    overlayEl.removeEventListener("mousemove", handleHover, true);
-    overlayEl.removeEventListener("click", handleClick, true);
+    const target = document;
+    target.removeEventListener("mousemove", handleHover, true);
+    target.removeEventListener("click", handleClick, true);
+    target.removeEventListener("scroll", renderSelectedHighlights, true);
     document.removeEventListener("keydown", handleKeydown, true);
   };
 
   const activateSelectMode = () => {
     createShadowUI();
     modeActive = true;
-    if (overlayEl) overlayEl.style.display = "block";
-    if (selectBtn) selectBtn.style.display = "none";
-    if (exitBtn) exitBtn.style.display = "block";
     addOverlayListeners();
   };
 
   const extractMessageAtPoint = (x, y) => {
     if (!modeActive) return null;
-    overlayEl.style.pointerEvents = "none";
     const node = findMessageNodeFromPoint(x, y);
-    overlayEl.style.pointerEvents = "auto";
     if (!node || !looksLikeChatMessage(node)) return null;
     return {
       node,
@@ -240,49 +240,40 @@
     e.preventDefault();
     e.stopPropagation();
     const hit = extractMessageAtPoint(e.clientX, e.clientY);
-    if (hit && hit.content) {
-      selectedMessages.push({ role: hit.role, content: hit.content });
+    if (!hit || !hit.node || !hit.content) return;
+    const prevCount = selectedMessages.length;
+    if (selectedMap.has(hit.node)) {
+      selectedMap.delete(hit.node);
+      selectedMessages = selectedMessages.filter((m) => m.node !== hit.node);
+    } else {
+      const entry = { node: hit.node, role: hit.role, content: hit.content };
+      selectedMap.set(hit.node, entry);
+      selectedMessages.push(entry);
     }
+    notifySelectionChange(prevCount);
   };
 
   const handleKeydown = (e) => {
     if (e.key === "Escape") {
-      deactivateSelectMode();
+      clearSelection(true);
     }
   };
 
   const cleanup = () => {
     deactivateSelectMode();
     selectedMessages = [];
+    selectedMap = new WeakMap();
     if (shadowHost && shadowHost.parentNode) {
       shadowHost.parentNode.removeChild(shadowHost);
     }
     shadowHost = null;
     shadowRoot = null;
-    overlayEl = null;
     highlightEl = null;
-    selectBtn = null;
-    exitBtn = null;
+    selectedLayer = null;
   };
 
   const ensureUIBindings = () => {
     createShadowUI();
-    if (selectBtn && !selectBtn._bound) {
-      selectBtn._bound = true;
-      selectBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        activateSelectMode();
-      });
-    }
-    if (exitBtn && !exitBtn._bound) {
-      exitBtn._bound = true;
-      exitBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        deactivateSelectMode();
-      });
-    }
   };
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -291,19 +282,44 @@
       sendResponse({ messages: safeGetAllMessages() });
       return true;
     }
-    if (msg.type === "SNIPBOARD_SELECT_MODE_ON") {
+    if (msg.type === "SNIPBOARD_SELECT_MODE_ON_V2") {
+      selectedMessages = [];
+      selectedMap = new WeakMap();
       ensureUIBindings();
       activateSelectMode();
       sendResponse({ ok: true });
       return true;
     }
-    if (msg.type === "SNIPBOARD_SELECT_MODE_OFF") {
-      deactivateSelectMode();
-      sendResponse({ ok: true });
+    if (msg.type === "SNIPBOARD_SELECT_MODE_OFF_AND_SAVE") {
+      if (!selectedMessages.length) {
+        cleanup();
+        sendResponse({ ok: true, saved: false });
+        return true;
+      }
+      const text = selectedMessages
+        .map((m) => `${(m.role || "assistant").toUpperCase()}:\n${m.content || ""}`)
+        .join("\n\n");
+      const title = `ChatGPT clip (${selectedMessages.length} message${selectedMessages.length === 1 ? "" : "s"})`;
+      fetch("http://127.0.0.1:4050/add-clip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sectionId: "inbox",
+          title,
+          tags: [],
+          text,
+          sourceUrl: location.href,
+          sourceTitle: document.title || "",
+          capturedAt: Date.now(),
+        }),
+      }).catch(() => {}).finally(() => {
+        cleanup();
+        sendResponse({ ok: true, saved: true });
+      });
       return true;
     }
     if (msg.type === "SNIPBOARD_GET_SELECTION") {
-      sendResponse({ messages: selectedMessages.slice() });
+      sendResponse({ messages: selectedMessages.map((m) => ({ role: m.role, content: m.content })) });
       return true;
     }
     if (msg.type === "SNIPBOARD_STOP") {

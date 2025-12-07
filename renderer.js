@@ -21,6 +21,7 @@ const state = {
   pendingColorSection: null,
   pendingIconSection: null,
   selectedIcon: "",
+  selectedColor: "",
 };
 
 const IPC = {
@@ -44,6 +45,15 @@ const IPC = {
 
 const DEFAULT_SCHEMA = ["title", "text", "screenshots", "tags", "sourceUrl", "sourceTitle", "capturedAt", "notes"];
 const FIELD_OPTIONS = DEFAULT_SCHEMA.slice();
+const SNIPBOARD_COLORS = [
+  "#FF3B30", "#FF9500", "#FFCC00",
+  "#34C759", "#30D158", "#007AFF",
+  "#0A84FF", "#5856D6", "#AF52DE",
+  "#5AC8FA", "#64D2FF", "#FF2D55",
+  "#FF375F", "#FFD60A", "#8E8E93",
+  "#AEAEB2", "#1C1C1E", "#FFFFFF",
+  "#000000", "#32ADE6"
+];
 let searchIndex = new Map();
 let draggingClipId = null;
 function noopInvoke(channel, args) {
@@ -73,10 +83,10 @@ const iconChoices = [
   { key: "star", label: "Star", icon: "\u2B50" },
 ];
 const DEFAULT_TABS = [
-  { id: "inbox", label: "Inbox", locked: false, exportFolder: "", color: "", icon: "\u{1F4E5}", order: 0, schema: DEFAULT_SCHEMA.slice() },
-  { id: "common-prompts", label: "Common Prompts", locked: false, exportFolder: "", color: "", icon: "\u{1F4A1}", order: 1, schema: DEFAULT_SCHEMA.slice() },
+  { id: "inbox", label: "Inbox", locked: false, exportFolder: "", color: "", icon: "", order: 0, schema: DEFAULT_SCHEMA.slice() },
+  { id: "common-prompts", label: "Common Prompts", locked: false, exportFolder: "", color: "", icon: "", order: 1, schema: DEFAULT_SCHEMA.slice() },
   { id: "black-skies", label: "Black Skies", locked: false, exportFolder: "", color: "", icon: "", order: 2, schema: DEFAULT_SCHEMA.slice() },
-  { id: "errors", label: "Errors", locked: false, exportFolder: "", color: "", icon: "\u26A0\uFE0F", order: 3, schema: DEFAULT_SCHEMA.slice() },
+  { id: "errors", label: "Errors", locked: false, exportFolder: "", color: "", icon: "", order: 3, schema: DEFAULT_SCHEMA.slice() },
   { id: "misc", label: "Misc", locked: false, exportFolder: "", color: "", icon: "", order: 4, schema: DEFAULT_SCHEMA.slice() },
 ];
 // ===============================================================
@@ -131,7 +141,7 @@ const renameInput = document.getElementById("renameInput");
 const renameSaveBtn = document.getElementById("renameSaveBtn");
 const renameCancelBtn = document.getElementById("renameCancelBtn");
 const colorModal = document.getElementById("colorModal");
-const colorInput = document.getElementById("colorInput");
+const colorSwatches = document.getElementById("colorSwatches");
 const colorSaveBtn = document.getElementById("colorSaveBtn");
 const colorCancelBtn = document.getElementById("colorCancelBtn");
 const iconModal = document.getElementById("iconModal");
@@ -197,69 +207,102 @@ function applySchemaVisibility(schema) {
   notesRow.style.display = schemaSet.has("notes") ? "" : "none";
 }
 
-function openScreenshotEditor(fullPath, filename, clip) {
+function renderColorPalette(container, selectedColor, onSelect, includeNone = false) {
+  if (!container) return;
+  container.innerHTML = "";
+
+  const createSwatch = (color, label) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "color-swatch";
+    if (!color) btn.classList.add("color-swatch--none");
+    if (color === selectedColor) btn.classList.add("selected");
+    btn.style.backgroundColor = color || "transparent";
+    if (!color) btn.textContent = label || "None";
+    btn.onclick = () => {
+      container.querySelectorAll(".color-swatch.selected").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+      if (typeof onSelect === "function") onSelect(color || "");
+    };
+    container.appendChild(btn);
+  };
+
+  if (includeNone) createSwatch("", "None");
+  SNIPBOARD_COLORS.forEach((clr) => createSwatch(clr));
+}
+
+function openScreenshotEditor(src, filename, clip) {
   const existing = document.getElementById(screenshotEditModalId);
   if (existing) existing.remove();
+
   const overlay = document.createElement("div");
   overlay.id = screenshotEditModalId;
-  overlay.style.position = "fixed";
-  overlay.style.top = "0";
-  overlay.style.left = "0";
-  overlay.style.width = "100vw";
-  overlay.style.height = "100vh";
-  overlay.style.background = "rgba(0,0,0,0.5)";
-  overlay.style.display = "flex";
-  overlay.style.alignItems = "center";
-  overlay.style.justifyContent = "center";
-  overlay.style.zIndex = "100000";
+  overlay.className = "screenshot-editor-overlay";
 
   const modal = document.createElement("div");
-  modal.style.background = "#fff";
-  modal.style.padding = "12px";
-  modal.style.borderRadius = "8px";
-  modal.style.boxShadow = "0 8px 20px rgba(0,0,0,0.25)";
-  modal.style.maxWidth = "90vw";
-  modal.style.maxHeight = "90vh";
-  modal.style.display = "flex";
-  modal.style.flexDirection = "column";
-  modal.style.gap = "8px";
-
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  let drawing = false;
-  let erasing = false;
-  let penColor = "#ff0000";
-  let lastX = 0;
-  let lastY = 0;
+  modal.className = "screenshot-editor-dialog";
 
   const toolbar = document.createElement("div");
-  toolbar.style.display = "flex";
-  toolbar.style.gap = "8px";
-  toolbar.style.alignItems = "center";
+  toolbar.className = "screenshot-editor-toolbar";
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "screenshot-editor-canvas";
+  const ctx = canvas.getContext("2d");
+
+  let drawing = false;
+  let erasing = false;
+  let penColor = SNIPBOARD_COLORS[0];
+  let lastX = 0;
+  let lastY = 0;
+  let imgLoaded = false;
+
+  const teardown = () => {
+    canvas.removeEventListener("mousedown", startDraw);
+    canvas.removeEventListener("mousemove", moveDraw);
+    canvas.removeEventListener("mouseup", endDraw);
+    canvas.removeEventListener("mouseleave", endDraw);
+    overlay.remove();
+  };
 
   const penBtn = document.createElement("button");
   penBtn.textContent = "Pen";
-  penBtn.onclick = () => { erasing = false; };
-
+  penBtn.className = "btn ghost";
   const eraserBtn = document.createElement("button");
   eraserBtn.textContent = "Eraser";
-  eraserBtn.onclick = () => { erasing = true; };
+  eraserBtn.className = "btn ghost";
 
-  const colorInputEl = document.createElement("input");
-  colorInputEl.type = "color";
-  colorInputEl.value = penColor;
-  colorInputEl.onchange = (e) => { penColor = e.target.value || "#ff0000"; };
+  const setMode = (erase) => {
+    erasing = erase;
+    penBtn.classList.toggle("active", !erase);
+    eraserBtn.classList.toggle("active", erase);
+  };
+  penBtn.onclick = () => setMode(false);
+  eraserBtn.onclick = () => setMode(true);
+  setMode(false);
+
+  const colorRow = document.createElement("div");
+  colorRow.className = "color-swatch-row";
+  renderColorPalette(colorRow, penColor, (color) => {
+    penColor = color || SNIPBOARD_COLORS[0];
+    setMode(false);
+  });
+
+  const spacer = document.createElement("div");
+  spacer.style.flex = "1";
 
   const saveBtn = document.createElement("button");
   saveBtn.textContent = "Save";
+  saveBtn.className = "btn primary";
 
   const cancelBtn = document.createElement("button");
   cancelBtn.textContent = "Cancel";
-  cancelBtn.onclick = () => overlay.remove();
+  cancelBtn.className = "btn ghost";
+  cancelBtn.onclick = () => teardown();
 
   toolbar.appendChild(penBtn);
   toolbar.appendChild(eraserBtn);
-  toolbar.appendChild(colorInputEl);
+  toolbar.appendChild(colorRow);
+  toolbar.appendChild(spacer);
   toolbar.appendChild(saveBtn);
   toolbar.appendChild(cancelBtn);
 
@@ -270,20 +313,36 @@ function openScreenshotEditor(fullPath, filename, clip) {
 
   const img = new Image();
   img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
-    canvas.style.maxWidth = "80vw";
-    canvas.style.maxHeight = "70vh";
+    imgLoaded = true;
+    const naturalW = img.naturalWidth || img.width;
+    const naturalH = img.naturalHeight || img.height;
+    canvas.width = naturalW;
+    canvas.height = naturalH;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
   };
-  img.src = "file://" + fullPath.replace(/\\/g, "/");
+  img.onerror = (err) => {
+    console.error("[SnipBoard] Failed to load screenshot for edit:", err);
+    teardown();
+  };
+  img.src = src;
+
+  const getPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
 
   const draw = (x, y) => {
     ctx.beginPath();
     ctx.moveTo(lastX, lastY);
     ctx.lineTo(x, y);
-    ctx.strokeStyle = erasing ? "rgba(0,0,0,0)" : penColor;
-    ctx.lineWidth = erasing ? 14 : 4;
+    ctx.strokeStyle = erasing ? "rgba(0,0,0,1)" : penColor;
+    ctx.lineWidth = erasing ? 16 : 4;
     ctx.globalCompositeOperation = erasing ? "destination-out" : "source-over";
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -292,20 +351,22 @@ function openScreenshotEditor(fullPath, filename, clip) {
     lastY = y;
   };
 
-  const startDraw = (e) => {
+  function startDraw(e) {
+    if (!imgLoaded) return;
     drawing = true;
-    const rect = canvas.getBoundingClientRect();
-    lastX = e.clientX - rect.left;
-    lastY = e.clientY - rect.top;
-  };
-  const moveDraw = (e) => {
-    if (!drawing) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    draw(x, y);
-  };
-  const endDraw = () => { drawing = false; };
+    const pos = getPos(e);
+    lastX = pos.x;
+    lastY = pos.y;
+  }
+  function moveDraw(e) {
+    if (!drawing || !imgLoaded) return;
+    const pos = getPos(e);
+    draw(pos.x, pos.y);
+  }
+  function endDraw() {
+    drawing = false;
+    ctx.globalCompositeOperation = "source-over";
+  }
 
   canvas.addEventListener("mousedown", startDraw);
   canvas.addEventListener("mousemove", moveDraw);
@@ -313,11 +374,16 @@ function openScreenshotEditor(fullPath, filename, clip) {
   canvas.addEventListener("mouseleave", endDraw);
 
   saveBtn.onclick = async () => {
+    if (!imgLoaded) return;
     const dataUrl = canvas.toDataURL("image/png");
     await window.api.invoke("save-screenshot", [{ dataUrl, filename }]);
-    overlay.remove();
+    teardown();
     await refreshData(clip.id);
   };
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) teardown();
+  });
 }
 
 function normalizeTabs(tabs) {
@@ -396,6 +462,17 @@ function getActiveTab() {
     tab.schema = DEFAULT_SCHEMA.slice();
   }
   return tab;
+}
+
+function updateSidebarHeader() {
+  const nameEl = document.getElementById("clipTabName");
+  const pathEl = document.getElementById("clipTabPath");
+  if (!nameEl || !pathEl) return;
+
+  const activeTab = getActiveTab();
+  nameEl.textContent = activeTab ? (activeTab.name || activeTab.label || sectionLabel(activeTab.id)) : "";
+  const finalPath = activeTab ? (activeTab.exportPath || activeTab.exportFolder || "") : "";
+  pathEl.textContent = finalPath;
 }
 
 function getSectionById(id) {
@@ -570,6 +647,7 @@ function setCurrentSection(sectionId) {
   updateExportPathDisplay();
   updateDeleteButtonsLockState();
   renderLockButtonState();
+  updateSidebarHeader();
   scheduleSaveTabsConfig();
 }
 
@@ -587,20 +665,13 @@ if (lockToggleBtn) {
 async function renderScreenshots(clip) {
   screenshotBox.innerHTML = "";
   const shots = Array.isArray(clip.screenshots) ? clip.screenshots : [];
+  const baseUrl = "http://127.0.0.1:4050/screenshots";
   for (const file of shots) {
-    const check = await window.api.invoke("check-screenshot-path", file);
-    if (!check || !check.ok || !check.exists) {
-      const missing = document.createElement("div");
-      missing.className = "screenshot-missing";
-      missing.textContent = "(screenshot missing)";
-      screenshotBox.appendChild(missing);
-      continue;
-    }
+    if (!file) continue;
     const img = document.createElement("img");
     img.className = "thumb screenshot-thumb";
-    img.src = "file://" + check.fullPath.replace(/\\/g, "/");
+    img.src = `${baseUrl}/${file}`;
     img.onerror = () => {
-      console.warn("[SnipBoard] missing screenshot file:", img.src);
       img.remove();
       const missing = document.createElement("div");
       missing.className = "screenshot-missing";
@@ -609,12 +680,29 @@ async function renderScreenshots(clip) {
     };
     img.addEventListener("dblclick", () => openScreenshotModal(img.src));
     img.addEventListener("click", () => openScreenshotModal(img.src));
+    img.oncontextmenu = async (e) => {
+      e.preventDefault();
+      const ok = window.confirm("Delete this screenshot?");
+      if (!ok) return;
+      try {
+        const res = await window.api.invoke("delete-screenshot", { clipId: clip.id, filename: file });
+        if (res && res.success && res.clip) {
+          const idx = state.clips.findIndex((c) => c.id === clip.id);
+          if (idx >= 0) state.clips[idx] = res.clip;
+          state.currentClipId = clip.id;
+          await renderEditor();
+          renderClipList();
+        }
+      } catch (err) {
+        console.error("[SnipBoard] delete-screenshot failed:", err);
+      }
+    };
     screenshotBox.appendChild(img);
 
     const editBtn = document.createElement("button");
     editBtn.className = "screenshot-edit-btn";
     editBtn.textContent = "Edit";
-    editBtn.onclick = () => openScreenshotEditor(check.fullPath, file, clip);
+    editBtn.onclick = () => openScreenshotEditor(`${baseUrl}/${file}`, file, clip);
     screenshotBox.appendChild(editBtn);
   }
 }
@@ -644,17 +732,16 @@ function renderTabs() {
       pill.style.color = "#fff";
       pill.classList.add("section-pill--colored");
     }
+    let iconSpan = pill.querySelector(".section-pill__icon");
+    if (iconSpan) iconSpan.remove();
     if (tab.icon) {
-      let iconSpan = pill.querySelector(".section-pill__icon");
-      if (!iconSpan) {
-        const content = pill.querySelector(".section-pill__content");
-        if (content) {
-          iconSpan = document.createElement("span");
-          iconSpan.className = "section-pill__icon";
-          content.insertBefore(iconSpan, content.firstChild);
-        }
+      const content = pill.querySelector(".section-pill__content");
+      if (content) {
+        iconSpan = document.createElement("span");
+        iconSpan.className = "section-pill__icon";
+        iconSpan.textContent = tab.icon;
+        content.insertBefore(iconSpan, content.firstChild);
       }
-      if (iconSpan) iconSpan.textContent = tab.icon;
     }
   });
 }
@@ -736,12 +823,6 @@ function renderSectionsBar() {
     nameSpan.textContent = section.label || sectionLabel(section.id);
     pillContent.appendChild(nameSpan);
 
-    if (section.exportPath) {
-      const exportIcon = document.createElement("span");
-      exportIcon.className = "section-pill__folder";
-      exportIcon.textContent = "\u{1F4C1}";
-      pillContent.appendChild(exportIcon);
-    }
     }
     tabEl.appendChild(pillContent);
 
@@ -830,6 +911,7 @@ function renderSectionsBar() {
   if (activePill && typeof activePill.scrollIntoView === "function") {
     activePill.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
   }
+  updateSidebarHeader();
 }
 
 function startTabReorder(sectionId) {
@@ -1053,18 +1135,7 @@ if (tabContextMenuEl) {
         startInlineRename(sectionId);
         break;
       case "color":
-        const tab = state.tabs.find((t) => t.id === sectionId);
-        if (tab) {
-          const color = await window.ui.openColorPicker(tab.color || "#ffffff");
-          if (color) {
-            tab.color = color;
-            const savedTab = window.tabsState?.tabs?.find((t) => t.id === sectionId);
-            if (savedTab) savedTab.color = color;
-            window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
-            await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
-            renderTabs();
-          }
-        }
+        await selectTabColor(sectionId);
         break;
       case "schema":
         openSchemaConfigurator(sectionId);
@@ -1095,22 +1166,22 @@ if (colorSaveBtn) {
       if (colorModal) colorModal.classList.remove("is-open");
       return;
     }
-  const color = colorInput.value || "";
-  await updateSection(targetId, { color });
-  const sec = state.sections.find((s) => s.id === targetId);
-  if (sec) sec.color = color;
-  const tab = state.tabs.find((t) => t.id === targetId);
-  if (tab) tab.color = color;
-  const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
-  if (targetTab) targetTab.color = color;
-  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
-  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
-  renderTabs();
-  if (colorModal) colorModal.classList.remove("is-open");
-  state.pendingColorSection = null;
-  renderSectionsBar();
-  scheduleSaveTabsConfig();
-};
+    const color = state.selectedColor || "";
+    await updateSection(targetId, { color });
+    const sec = state.sections.find((s) => s.id === targetId);
+    if (sec) sec.color = color;
+    const tab = state.tabs.find((t) => t.id === targetId);
+    if (tab) tab.color = color;
+    const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
+    if (targetTab) targetTab.color = color;
+    window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+    await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+    renderTabs();
+    if (colorModal) colorModal.classList.remove("is-open");
+    state.pendingColorSection = null;
+    renderSectionsBar();
+    scheduleSaveTabsConfig();
+  };
 }
 if (colorCancelBtn) {
   colorCancelBtn.onclick = () => {
@@ -1418,9 +1489,13 @@ async function assignExportFolder(sectionId) {
 
 async function selectTabColor(sectionId) {
   const sec = state.sections.find((s) => s.id === sectionId);
-  if (!sec || !colorModal || !colorInput) return;
+  if (!sec || !colorModal || !colorSwatches) return;
   state.pendingColorSection = sectionId;
-  colorInput.value = sec.color || "#2f6bff";
+  const startColor = sec.color && SNIPBOARD_COLORS.includes(sec.color) ? sec.color : (sec.color ? SNIPBOARD_COLORS[0] : "");
+  state.selectedColor = startColor || "";
+  renderColorPalette(colorSwatches, state.selectedColor, (color) => {
+    state.selectedColor = color || "";
+  }, true);
   colorModal.classList.add("is-open");
 }
 
@@ -1547,12 +1622,19 @@ async function createClipboardClip() {
 async function createScreenSnip() {
   try {
     const capture = await window.api.invoke(IPC.CAPTURE_SCREEN);
-    if (!capture || !capture.dataUrl) {
-      console.warn("[SnipBoard] captureScreen returned empty payload");
+    if (!capture || !capture.success) {
+      console.warn("[SnipBoard] captureScreen failed or returned empty payload", capture);
       return;
     }
-    const files = await window.api.invoke(IPC.SAVE_SCREENSHOT, [{ dataUrl: capture.dataUrl }]);
-    const filenames = (files || []).map((f) => f.filename);
+    const filenames = Array.isArray(capture.screenshots)
+      ? capture.screenshots.map((s) => s.filename)
+      : [];
+    if (Array.isArray(capture.screenshots)) {
+      capture.screenshots.forEach((shot) => {
+        // Optionally display previews using shot.dataUrl
+        // e.g., add to UI if needed
+      });
+    }
     const clip = {
       id: null,
       title: "Screen Snip",
@@ -1576,9 +1658,18 @@ async function addScreenshotToCurrent() {
   if (!clip) return;
   try {
     const capture = await window.api.invoke(IPC.CAPTURE_SCREEN);
-    if (!capture || !capture.dataUrl) return;
-    const files = await window.api.invoke(IPC.SAVE_SCREENSHOT, [{ dataUrl: capture.dataUrl }]);
-    const filenames = (files || []).map((f) => f.filename);
+    if (!capture || !capture.success) {
+      console.warn("[SnipBoard] captureScreen failed or returned empty payload", capture);
+      return;
+    }
+    const filenames = Array.isArray(capture.screenshots)
+      ? capture.screenshots.map((s) => s.filename)
+      : [];
+    if (Array.isArray(capture.screenshots)) {
+      capture.screenshots.forEach((shot) => {
+        // Optionally display previews using shot.dataUrl
+      });
+    }
     clip.screenshots = [...(clip.screenshots || []), ...filenames];
     const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
     await refreshData(saved.id);
@@ -1619,6 +1710,7 @@ async function init() {
     updateExportPathDisplay();
     updateDeleteButtonsLockState();
     renderLockButtonState();
+    updateSidebarHeader();
     bindHandlersOnce();
     await syncTabsToBackend();
   } catch (err) {

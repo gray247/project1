@@ -11,22 +11,6 @@
   <body>
     <div id="app">
       <header class="app-header">
-        <div class="header-actions left-actions">
-          <button id="newClipBtn" class="icon-button" title="Capture selected text">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <circle cx="20" cy="20" r="6"></circle>
-              <circle cx="36" cy="36" r="6"></circle>
-              <path d="M24 24 L40 40 M28 12 L44 28" stroke-width="4"></path>
-            </svg>
-          </button>
-          <button id="newSnipBtn" class="icon-button" title="Capture full screenshot">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <rect x="10" y="16" width="44" height="32" rx="6" ry="6"></rect>
-              <circle cx="32" cy="32" r="9"></circle>
-              <rect x="24" y="10" width="16" height="6" rx="2" ry="2"></rect>
-            </svg>
-          </button>
-        </div>
         <div class="brand">
           <div class="title app-title">SnipBoard</div>
         </div>
@@ -58,7 +42,10 @@
       <div class="content">
         <aside id="clipPane">
           <div class="list-header">
-            <div class="list-title">Clips</div>
+          <div id="clipSidebarHeader" class="sidebar-header">
+            <div id="clipTabName"></div>
+            <div id="clipTabPath"></div>
+          </div>
             <div class="list-controls">
               <button id="listAddBtn" class="pill" title="New clip in current section">+</button>
             </div>
@@ -155,7 +142,7 @@
     <div id="colorModal" class="mini-modal">
       <div class="mini-modal__content">
         <div class="mini-modal__header">Choose Color</div>
-        <input id="colorInput" type="color" />
+        <div id="colorSwatches" class="color-swatch-grid"></div>
         <div class="mini-modal__actions">
           <button id="colorCancelBtn" class="ghost">Cancel</button>
           <button id="colorSaveBtn">Save</button>

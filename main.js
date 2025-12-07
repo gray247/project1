@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, shell, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, shell, dialog, screen, nativeImage } = require("electron");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
@@ -272,7 +272,38 @@ function normalizeClipPayload(payload = {}) {
 }
 
 async function handleHttpRequest(req, res) {
+  const allowedOrigins = [
+    "https://chat.openai.com",
+    "https://chatgpt.com",
+  ];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else if (origin && origin.startsWith("chrome-extension://")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+
   const normalizedPath = (req.url || "").split("?")[0] || "";
+  if (req.method === "GET" && normalizedPath.startsWith("/screenshots/")) {
+    const filename = decodeURIComponent(normalizedPath.replace("/screenshots/", ""));
+    const filePath = path.join(SCREENSHOTS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(filePath);
+    res.writeHead(200, { "Content-Type": "image/png" });
+    stream.pipe(res);
+    return;
+  }
   if (req.method !== "POST" || normalizedPath !== "/add-clip") {
     sendJsonResponse(res, 404, { ok: false, error: "Not found" });
     return;
@@ -579,6 +610,34 @@ ipcMain.handle("save-screenshot", async (_event, payload) => {
   }
 });
 
+ipcMain.handle("delete-screenshot", async (_event, payload) => {
+  try {
+    const { clipId, filename } = payload || {};
+    if (!clipId || !filename) return { success: false, error: "Missing clipId or filename" };
+
+    const clipData = readJson(CLIPS_FILE, []);
+    const clipIdx = clipData.findIndex((c) => c.id === clipId);
+    if (clipIdx === -1) return { success: false, error: "Clip not found" };
+
+    const filePath = path.join(SCREENSHOTS_DIR, filename);
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (err) {
+        console.warn("[SnipBoard] Failed to delete screenshot file:", err);
+      }
+    }
+
+    clipData[clipIdx].screenshots = (clipData[clipIdx].screenshots || []).filter((s) => s !== filename);
+    writeJson(CLIPS_FILE, clipData);
+
+    return { success: true, clip: clipData[clipIdx] };
+  } catch (err) {
+    console.error("[SnipBoard] delete-screenshot failed:", err);
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle("get-screenshot-url", async (_event, filename) => {
   try {
     const filePath = path.join(SCREENSHOTS_DIR, filename);
@@ -658,24 +717,81 @@ ipcMain.handle("debug-list-displays", async () => {
   }
 });
 
-ipcMain.handle("capture-screen", async (_event, id) => {
-  try {
-    const sources = await desktopCapturer.getSources({
-      types: ["screen"],
-      fetchWindowIcons: true,
-      thumbnailSize: { width: 4000, height: 2250 },
-    });
+async function captureAllMonitors() {
+  const mainDisplay = screen.getPrimaryDisplay();
+  const fullSize = mainDisplay && mainDisplay.size ? mainDisplay.size : { width: 1920, height: 1080 };
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    fetchWindowIcons: false,
+    thumbnailSize: { width: fullSize.width, height: fullSize.height },
+  });
 
-    const match = id ? sources.find((s) => s.id === id) : sources[0];
-    if (!match) throw new Error("No matching display");
-
-    if (match.thumbnail.isEmpty()) {
-      throw new Error("Empty full screenshot");
+  const captures = [];
+  sources.forEach((source, index) => {
+    const img = source.thumbnail;
+    if (!img || img.isEmpty()) {
+      console.warn("[SnipBoard] Empty thumbnail for", source.id, source.name);
+      return;
     }
+    const buffer = img.toPNG();
+    if (!buffer || buffer.length < 1000) {
+      console.warn("[SnipBoard] Tiny/invalid PNG for", source.id, source.name);
+      return;
+    }
+    captures.push({
+      id: source.id,
+      index,
+      buffer,
+      width: img.getSize().width,
+      height: img.getSize().height,
+    });
+  });
 
-    const png = match.thumbnail.toPNG();
-    const dataUrl = "data:image/png;base64," + png.toString("base64");
-    return { dataUrl };
+  return captures;
+}
+
+async function saveAllMonitorScreenshots() {
+  ensureDir(SCREENSHOTS_DIR);
+  const captures = await captureAllMonitors();
+  const timestamp = Date.now();
+  const files = [];
+
+  captures.forEach((capture) => {
+    const fileName = `Monitor-${capture.index + 1}-${timestamp}.png`;
+    const filePath = path.join(SCREENSHOTS_DIR, fileName);
+    if (!capture.buffer || capture.buffer.length < 1000) {
+      console.warn("[SnipBoard] Ignoring empty capture for", capture.id);
+      return;
+    }
+    fs.writeFileSync(filePath, capture.buffer);
+    files.push({
+      filename: fileName,
+      buffer: capture.buffer,
+      dataUrl: "data:image/png;base64," + capture.buffer.toString("base64"),
+      path: filePath,
+    });
+  });
+
+  console.log("[SnipBoard] Multi-monitor capture:", {
+    requested: captures.length,
+    saved: files.length,
+    files: files.map(f => f.filename),
+  });
+
+  return { count: files.length, files };
+}
+
+ipcMain.handle("capture-screen", async () => {
+  try {
+    const result = await saveAllMonitorScreenshots();
+    return {
+      success: true,
+      monitorsCaptured: result.count,
+      screenshots: result.files.map((f) => ({
+        filename: f.filename,
+        dataUrl: f.dataUrl,
+      })),
+    };
   } catch (err) {
     console.error("[SnipBoard] capture-screen failed:", err);
     throw err;
