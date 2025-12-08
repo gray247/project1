@@ -146,7 +146,11 @@ const DEFAULT_TABS = [
   { id: "misc", label: "Misc", locked: false, exportFolder: "", color: "", icon: "", order: 4, schema: DEFAULT_SCHEMA.slice() },
 ];
 const EXPORT_BASE = "data/exports";
-const EXPORT_BASE = "data/exports";
+const DEFAULT_CLIP_DISPLAY = {
+  icon: null,
+  color: null,
+  userColor: null,
+};
 // ===============================================================
 // DOM ELEMENTS
 // ===============================================================
@@ -213,10 +217,15 @@ const iconModal = document.getElementById("iconModal");
 const iconChoicesContainer = document.getElementById("iconChoices");
 const iconSaveBtn = document.getElementById("iconSaveBtn");
 const iconCancelBtn = document.getElementById("iconCancelBtn");
+let clipDisplayMenuEl = null;
+let pendingClipIconId = null;
+let pendingClipColorId = null;
 
 // ---------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------
+
+function dragEvent(e) { /* no-op placeholder */ }
 
 function sectionLabel(id) {
   switch (id) {
@@ -236,6 +245,21 @@ function computeSignature(arr) {
   } catch {
     return "";
   }
+}
+
+function normalizeClip(raw = {}) {
+  const base = { ...raw };
+  if (base.icon === undefined) base.icon = DEFAULT_CLIP_DISPLAY.icon;
+  if (base.color === undefined) base.color = DEFAULT_CLIP_DISPLAY.color;
+  if (base.userColor === undefined) base.userColor = DEFAULT_CLIP_DISPLAY.userColor;
+  return base;
+}
+
+function getTabColorForClip(clip) {
+  const tabId = clip.sectionId || clip.section?.id || clip.section;
+  const tab = state.tabs.find((t) => t.id === tabId) || state.sections.find((s) => s.id === tabId);
+  const color = tab ? (tab.color || tab.exportColor || tab.sectionColor || tab?.schemaColor) : "";
+  return color || "#d0d7e2";
 }
 
 function slugifyTabName(name) {
@@ -611,8 +635,9 @@ function updateSidebarHeader() {
   if (!nameEl || !pathEl) return;
 
   const activeTab = getActiveTab();
-  nameEl.textContent = activeTab ? (activeTab.name || activeTab.label || sectionLabel(activeTab.id)) : "";
-  const finalPath = activeTab ? (activeTab.exportPath || activeTab.exportFolder || "") : "";
+  const isAll = !activeTab || activeTab.id === "all" || (activeTab.name || "").toLowerCase() === "all";
+  nameEl.textContent = isAll ? "All" : (activeTab.name || activeTab.label || sectionLabel(activeTab.id));
+  const finalPath = isAll ? "" : (activeTab ? (activeTab.exportPath || activeTab.exportFolder || "") : "");
   pathEl.textContent = finalPath;
 }
 
@@ -1345,6 +1370,15 @@ if (tabContextMenuEl) {
 
 if (colorSaveBtn) {
   colorSaveBtn.onclick = async () => {
+    if (pendingClipColorId) {
+      const clip = state.clips.find((c) => c.id === pendingClipColorId);
+      if (clip) {
+        await persistClipAppearance(clip, { userColor: state.selectedColor || null });
+      }
+      pendingClipColorId = null;
+      if (colorModal) colorModal.classList.remove("is-open");
+      return;
+    }
     const targetId = state.pendingColorSection;
     if (!targetId) {
       if (colorModal) colorModal.classList.remove("is-open");
@@ -1369,6 +1403,7 @@ if (colorSaveBtn) {
 }
 if (colorCancelBtn) {
   colorCancelBtn.onclick = () => {
+    pendingClipColorId = null;
     state.pendingColorSection = null;
     if (colorModal) colorModal.classList.remove("is-open");
   };
@@ -1376,29 +1411,39 @@ if (colorCancelBtn) {
 
 if (iconSaveBtn) {
   iconSaveBtn.onclick = async () => {
+    if (pendingClipIconId) {
+      const clip = state.clips.find((c) => c.id === pendingClipIconId);
+      if (clip) {
+        await persistClipAppearance(clip, { icon: state.selectedIcon || null });
+      }
+      pendingClipIconId = null;
+      if (iconModal) iconModal.classList.remove("is-open");
+      return;
+    }
     const targetId = state.pendingIconSection;
     if (!targetId) {
       if (iconModal) iconModal.classList.remove("is-open");
       return;
     }
-  await updateSection(targetId, { icon: state.selectedIcon || "" });
-  const sec = state.sections.find((s) => s.id === targetId);
-  if (sec) sec.icon = state.selectedIcon || "";
-  const tab = state.tabs.find((t) => t.id === targetId);
-  if (tab) tab.icon = state.selectedIcon || "";
-  const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
-  if (targetTab) targetTab.icon = state.selectedIcon || "";
-  if (iconModal) iconModal.classList.remove("is-open");
-  state.pendingIconSection = null;
-  renderSectionsBar();
-  window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
-  await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
-  renderTabs();
-  scheduleSaveTabsConfig();
-};
+    await updateSection(targetId, { icon: state.selectedIcon || "" });
+    const sec = state.sections.find((s) => s.id === targetId);
+    if (sec) sec.icon = state.selectedIcon || "";
+    const tab = state.tabs.find((t) => t.id === targetId);
+    if (tab) tab.icon = state.selectedIcon || "";
+    const targetTab = window.tabsState?.tabs?.find((t) => t.id === targetId);
+    if (targetTab) targetTab.icon = state.selectedIcon || "";
+    if (iconModal) iconModal.classList.remove("is-open");
+    state.pendingIconSection = null;
+    renderSectionsBar();
+    window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+    await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
+    renderTabs();
+    scheduleSaveTabsConfig();
+  };
 }
 if (iconCancelBtn) {
   iconCancelBtn.onclick = () => {
+    pendingClipIconId = null;
     state.pendingIconSection = null;
     if (iconModal) iconModal.classList.remove("is-open");
   };
@@ -1474,6 +1519,103 @@ function sortClipsForView(clips) {
   }
 }
 
+function getClipDisplayParts(clip) {
+  const safeClip = normalizeClip(clip);
+  const label = safeClip.title || "(Untitled)";
+  const tabColorResolved = getTabColorForClip(safeClip);
+  const color = safeClip.userColor || "";
+  const icon = safeClip.icon || "";
+  return { label, icon, color, tabColor: tabColorResolved };
+}
+
+function ensureClipDisplayMenu() {
+  if (clipDisplayMenuEl) return clipDisplayMenuEl;
+  const menu = document.createElement("div");
+  menu.id = "clipDisplayMenu";
+  document.body.appendChild(menu);
+  clipDisplayMenuEl = menu;
+  return menu;
+}
+
+function closeClipDisplayMenu() {
+  if (clipDisplayMenuEl) {
+    clipDisplayMenuEl.style.display = "none";
+  }
+}
+
+async function persistClipAppearance(clip, updates) {
+  Object.assign(clip, updates);
+  const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
+  const targetId = saved?.id || clip.id;
+  await refreshData(targetId);
+  closeClipDisplayMenu();
+}
+
+function openClipIconPicker(clip) {
+  if (!iconModal || !iconChoicesContainer) return;
+  pendingClipIconId = clip.id;
+  state.selectedIcon = clip.icon || "";
+  iconChoicesContainer.innerHTML = "";
+  iconChoices.forEach((choice) => {
+    const isSelected = state.selectedIcon === choice.id || state.selectedIcon === choice.emoji || state.selectedIcon === choice.icon;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "icon-choice icon-choice-btn" + (isSelected ? " selected" : "");
+    item.dataset.icon = choice.id || choice.emoji || choice.icon || "";
+    const glyph = document.createElement("span");
+    glyph.className = "icon-choice__glyph";
+    if (choice.svg) glyph.innerHTML = choice.svg;
+    else glyph.textContent = choice.emoji || choice.icon || "";
+    item.appendChild(glyph);
+    item.setAttribute("aria-label", choice.label || choice.id || "icon");
+    item.onclick = () => {
+      state.selectedIcon = choice.id || choice.emoji || choice.icon || "";
+      iconChoicesContainer.querySelectorAll(".icon-choice").forEach((c) => c.classList.remove("selected"));
+      item.classList.add("selected");
+    };
+    iconChoicesContainer.appendChild(item);
+  });
+  iconModal.classList.add("is-open");
+}
+
+function openClipColorPicker(clip) {
+  if (!colorModal || !colorSwatches) return;
+  pendingClipColorId = clip.id;
+  state.selectedColor = clip.userColor || "";
+  renderColorPalette(colorSwatches, state.selectedColor, (color) => {
+    state.selectedColor = color || "";
+  }, true);
+  colorModal.classList.add("is-open");
+}
+
+function openClipDisplayMenu(clip, x, y) {
+  const menu = ensureClipDisplayMenu();
+  menu.innerHTML = "";
+  const items = [
+    { label: "Choose Icon…", action: () => openClipIconPicker(clip) },
+    { label: "Choose Color…", action: () => openClipColorPicker(clip) },
+    { label: "Reset Appearance", action: async () => { await persistClipAppearance(clip, { icon: null, userColor: null }); } },
+  ];
+  items.forEach((item) => {
+    if (item.separator) {
+      const sep = document.createElement("div");
+      sep.className = "clip-display-menu__separator";
+      menu.appendChild(sep);
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "clip-display-menu__item";
+    row.textContent = item.label;
+    row.onclick = () => {
+      item.action();
+      closeClipDisplayMenu();
+    };
+    menu.appendChild(row);
+  });
+  menu.style.display = "block";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+}
 function renderClipList() {
   const clipList = document.getElementById("clipList");
   if (!clipList) return;
@@ -1485,8 +1627,8 @@ function renderClipList() {
   const filtered = state.clips.filter((clip) => {
     if (state.currentSectionId !== "all" && clip.sectionId !== state.currentSectionId) {
       return false;
-    }
-    if (searchTerm) {
+  }
+  if (searchTerm) {
       const idx = searchIndex.get(clip.id) || `${clip.title || ""} ${clip.text || ""} ${(clip.tags || []).join(" ")}`.toLowerCase();
       if (!idx.includes(searchTerm)) return false;
     }
@@ -1502,45 +1644,67 @@ function renderClipList() {
   const sorted = sortClipsForView(filtered);
 
   sorted.forEach((clip) => {
+    const normalizedClip = normalizeClip(clip);
     const row = document.createElement("div");
     row.className = "clip-row";
-    if (clip.id === state.currentClipId) row.classList.add("clip-row--active");
+    row.dataset.clipId = normalizedClip.id;
+    if (normalizedClip.id === state.currentClipId) row.classList.add("clip-row--active");
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.dataset.clipId = clip.id;
-    checkbox.addEventListener("click", (ev) => ev.stopPropagation());
+    const tabColor = getTabColorForClip(normalizedClip);
+    row.style.setProperty("--tabColor", tabColor);
 
     const thumb = document.createElement("div");
     thumb.className = "clip-row__thumb";
-    if (Array.isArray(clip.screenshots) && clip.screenshots.length) {
-      const firstShot = clip.screenshots[0];
+    if (Array.isArray(normalizedClip.screenshots) && normalizedClip.screenshots.length) {
+      const firstShot = normalizedClip.screenshots[0];
       window.api.invoke("check-screenshot-path", firstShot).then((res) => {
         if (!res || !res.ok || !res.exists) return;
-        const img = document.createElement("img");
-        img.src = "file:///" + res.fullPath.replace(/\\/g, "/");
-        img.style.width = "100%";
-        img.style.height = "100%";
-        img.style.objectFit = "cover";
-        img.style.borderRadius = "8px";
-        thumb.innerHTML = "";
-        thumb.appendChild(img);
+        const src = "file:///" + res.fullPath.replace(/\\/g, "/");
+        thumb.style.backgroundImage = `url("${src}")`;
+        thumb.style.backgroundSize = "cover";
+        thumb.style.backgroundPosition = "center";
       }).catch(() => {});
     }
 
-    const title = document.createElement("div");
-    title.className = "clip-row__title";
-    title.textContent = clip.title || "(untitled)";
+    const { label, icon, color, tabColor: partTabColor } = getClipDisplayParts(normalizedClip);
+    if (color) {
+      row.style.setProperty("--userColor", color);
+      row.classList.add("has-user-color");
+    }
+    row.style.setProperty("--tabColor", partTabColor || tabColor);
 
+    const strip = document.createElement("div");
+    strip.className = "clip-color-strip";
+    row.appendChild(strip);
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.clipId = normalizedClip.id;
+    checkbox.addEventListener("click", (ev) => ev.stopPropagation());
     row.appendChild(checkbox);
+
+    if (icon) {
+      const iconChoice = findIconChoice(icon);
+      const iconWrap = document.createElement("div");
+      iconWrap.className = "clip-row-icon";
+      const iconSpan = createIconGlyph(iconChoice, icon);
+      iconSpan.classList.add("clip-icon");
+      iconWrap.appendChild(iconSpan);
+      row.appendChild(iconWrap);
+    }
+
     row.appendChild(thumb);
+
+    const title = document.createElement("div");
+    title.className = "clip-row__title clip-row-title";
+    title.textContent = label;
     row.appendChild(title);
     row.draggable = true;
     row.addEventListener("dragstart", (e) => {
-      draggingClipId = clip.id;
+      draggingClipId = normalizedClip.id;
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", clip.id);
+        e.dataTransfer.setData("text/plain", normalizedClip.id);
       }
     });
     row.addEventListener("dragend", () => {
@@ -1548,20 +1712,17 @@ function renderClipList() {
     });
 
     row.addEventListener("click", () => {
-      state.currentClipId = clip.id;
+      state.currentClipId = normalizedClip.id;
       renderClipList();
       renderEditor();
     });
 
-    row.addEventListener("contextmenu", async (e) => {
+    row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      state.currentClipId = clip.id;
+      state.currentClipId = normalizedClip.id;
       renderClipList();
       renderEditor();
-      const confirmDelete = window.confirm("Delete this clip?");
-      if (confirmDelete) {
-        await unifiedDelete([clip.id]);
-      }
+      openClipDisplayMenu(normalizedClip, e.clientX, e.clientY);
     });
 
     clipList.appendChild(row);
@@ -1674,17 +1835,22 @@ async function assignExportFolder(sectionId) {
     sec.exportPath = folder;
   }
   const stateTab = state.tabs.find((t) => t.id === sectionId);
-  if (stateTab) stateTab.exportFolder = folder;
+  if (stateTab) {
+    stateTab.exportFolder = folder;
+    stateTab.exportPath = folder;
+  }
   const tabId = sectionId;
   const selectedPath = folder;
   const targetTab = (window.tabsState && window.tabsState.tabs) ? window.tabsState.tabs.find(t => t.id === tabId) : null;
   if (targetTab) {
     targetTab.exportPath = selectedPath;
+    targetTab.exportFolder = selectedPath;
   }
   window.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
   await window.api.invoke(IPC.SAVE_TABS, window.tabsState);
   renderSectionsBar();
   updateExportPathDisplay();
+  updateSidebarHeader();
   scheduleSaveTabsConfig();
 }
 
@@ -1737,7 +1903,7 @@ async function selectTabIcon(sectionId) {
 
 async function refreshData(selectId = null) {
   const data = await window.api.invoke(IPC.GET_DATA);
-  state.clips = data.clips || [];
+  state.clips = (data.clips || []).map(normalizeClip);
   updateSearchIndex(state.clips);
   syncLockedSectionsFromState();
   if (selectId) {
@@ -1777,6 +1943,9 @@ function bindHandlersOnce() {
       clip.sectionId = sectionSelect.value || null;
       clip.sourceUrl = sourceUrlInput.value;
       clip.sourceTitle = sourceTitleInput.value;
+      if (clip.icon === undefined) clip.icon = DEFAULT_CLIP_DISPLAY.icon;
+      if (clip.color === undefined) clip.color = DEFAULT_CLIP_DISPLAY.color;
+      if (clip.userColor === undefined) clip.userColor = DEFAULT_CLIP_DISPLAY.userColor;
 
       state.currentSectionId = clip.sectionId || "all";
       const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
@@ -1885,6 +2054,9 @@ async function createClipboardClip() {
     screenshots: [],
     sectionId: currentSectionIdOrInbox(),
     capturedAt: Date.now(),
+    icon: DEFAULT_CLIP_DISPLAY.icon,
+    color: DEFAULT_CLIP_DISPLAY.color,
+    userColor: DEFAULT_CLIP_DISPLAY.userColor,
   };
   state.currentSectionId = clip.sectionId;
   const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
@@ -1912,11 +2084,14 @@ async function createScreenSnip() {
       title: "Screen Snip",
       text: "",
       notes: "",
-      tags: [],
-      screenshots: filenames,
-      sectionId: currentSectionIdOrInbox(),
-      capturedAt: Date.now(),
-    };
+    tags: [],
+    screenshots: filenames,
+    sectionId: currentSectionIdOrInbox(),
+    capturedAt: Date.now(),
+    icon: DEFAULT_CLIP_DISPLAY.icon,
+    color: DEFAULT_CLIP_DISPLAY.color,
+    userColor: DEFAULT_CLIP_DISPLAY.userColor,
+  };
   state.currentSectionId = clip.sectionId;
   const saved = await window.api.invoke(IPC.SAVE_CLIP, clip);
   await refreshData(saved.id);
@@ -1961,10 +2136,10 @@ async function init() {
     const tabsFromConfig = normalizeTabs(tabsConfig?.tabs);
     const fallbackTabs = normalizeTabs(sectionsToTabs(data.sections || []));
     state.tabs = tabsFromConfig.length ? tabsFromConfig : fallbackTabs;
-    state.sections = tabsToSections(state.tabs);
-    state.activeTabId = tabsConfig?.activeTabId || state.tabs[0]?.id || "all";
-    state.currentSectionId = state.activeTabId;
-    state.clips = data.clips || [];
+  state.sections = tabsToSections(state.tabs);
+  state.activeTabId = tabsConfig?.activeTabId || state.tabs[0]?.id || "all";
+  state.currentSectionId = state.activeTabId;
+  state.clips = (data.clips || []).map(normalizeClip);
     updateSearchIndex(state.clips);
     syncLockedSectionsFromState();
     lastPollSignature = computeSignature(state.clips);
@@ -1997,7 +2172,7 @@ async function init() {
       const sig = computeSignature(data.clips || []);
 
       if (sig !== lastPollSignature) {
-        state.clips = data.clips || [];
+        state.clips = (data.clips || []).map(normalizeClip);
         updateSearchIndex(state.clips);
         syncLockedSectionsFromState();
         lastPollSignature = sig;
@@ -2130,3 +2305,17 @@ function saveTabsState() {
   };
   window.api.invoke(IPC.SAVE_TABS, window.tabsState);
 }
+document.addEventListener("click", (evt) => {
+  if (clipDisplayMenuEl && clipDisplayMenuEl.style.display === "block") {
+    const target = evt.target;
+    if (!clipDisplayMenuEl.contains(target)) {
+      closeClipDisplayMenu();
+    }
+  }
+});
+
+document.addEventListener("keydown", (evt) => {
+  if (evt.key === "Escape") {
+    closeClipDisplayMenu();
+  }
+});

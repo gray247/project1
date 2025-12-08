@@ -160,6 +160,8 @@ async function mirrorClipToExport(clip, sections) {
       sourceTitle: clip.sourceTitle || "",
       capturedAt: clip.capturedAt || Date.now(),
       screenshots: clip.screenshots || [],
+      icon: Object.prototype.hasOwnProperty.call(clip, "icon") ? clip.icon : null,
+      color: Object.prototype.hasOwnProperty.call(clip, "color") ? clip.color : null,
     };
     await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
     console.log(`[SnipBoard] Mirrored clip ${clip.id} to ${filePath}`);
@@ -804,13 +806,31 @@ ipcMain.handle("capture-screen", async () => {
 =================================================
 */
 
+function isValidUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 ipcMain.handle("open-url", async (_event, url) => {
   try {
-    if (url) {
-      await shell.openExternal(url);
+    if (!url || !isValidUrl(url)) {
+      await dialog.showMessageBox({
+        type: "warning",
+        title: "Invalid URL",
+        message: "This link cannot be opened: Unsupported or unsafe URL scheme.",
+        buttons: ["OK"],
+      });
+      return { success: false };
     }
+    await shell.openExternal(url);
+    return { success: true };
   } catch (err) {
     console.error("[SnipBoard] open-url failed:", err);
+    return { success: false, error: err?.message };
   }
 });
 
