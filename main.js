@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, shell, dialog, screen, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, shell, dialog, screen } = require("electron");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
@@ -11,6 +11,7 @@ const SCREENSHOTS_DIR = path.join(DATA_DIR, "screenshots");
 const SECTION_DIR = path.join(DATA_DIR, "sections");
 const TABS_FILE = path.join(DATA_DIR, "tabs.json");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
+const INVALID_FILENAME_CHARS = new RegExp("[\\\\/?%*:|\"<>]", "g");
 
 function migrateDataFiles() {
   const oldDataDir = path.join(__dirname, "data");
@@ -128,27 +129,55 @@ function saveClips(clips) {
   writeJson(CLIPS_FILE, clips);
 }
 
+function slugifyTitle(name) {
+  const base = (name || "").toString().toLowerCase().trim();
+  const spaced = base.replace(/\s+/g, "-");
+  const cleaned = spaced.replace(/[^a-z0-9-]/g, "-");
+  const collapsed = cleaned.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return collapsed || "";
+}
+
 function sanitizeFilename(name) {
   return String(name || "")
-    .replace(/[\/\\?%*:|"<>]/g, "_")
+    .replace(INVALID_FILENAME_CHARS, "_")
     .replace(/\s+/g, "_")
     .slice(0, 80);
+}
+
+function getExportDirForSection(sectionId, sections) {
+  const section = Array.isArray(sections) ? sections.find((s) => s.id === sectionId) : null;
+  if (section && section.exportPath) return section.exportPath;
+  return null;
+}
+
+function resolveClipFilename(clip, sections, previousFilename) {
+  const baseSlug = slugifyTitle(clip?.title || "");
+  const base = baseSlug || clip?.id || "clip";
+  const exportDir = getExportDirForSection(clip?.sectionId, sections);
+  const defaultName = `${base}.json`;
+  if (!exportDir) {
+    return { filename: defaultName, filePath: null, exportDir: null };
+  }
+  ensureDir(exportDir);
+  let candidate = defaultName;
+  let counter = 2;
+  while (fs.existsSync(path.join(exportDir, candidate)) && candidate !== previousFilename) {
+    candidate = `${base}-${counter}.json`;
+    counter += 1;
+  }
+  return { filename: candidate, filePath: path.join(exportDir, candidate), exportDir };
 }
 
 async function mirrorClipToExport(clip, sections) {
   try {
     if (!clip || !clip.sectionId) return;
-    const section = sections.find((s) => s.id === clip.sectionId);
-    if (!section || !section.exportPath) {
+    const exportInfo = resolveClipFilename(clip, sections, clip.exportFilename);
+    if (!exportInfo || !exportInfo.filePath) {
       console.log(`[SnipBoard] Export folder not set for section "${clip.sectionId}", skipping mirror.`);
       return;
     }
-    const exportDir = section.exportPath;
-    ensureDir(exportDir);
-    const safeSection = sanitizeFilename(section.id);
-    const safeId = sanitizeFilename(clip.id || Date.now());
-    const filename = `${safeSection}_${safeId}.json`;
-    const filePath = path.join(exportDir, filename);
+    const filePath = exportInfo.filePath;
+    ensureDir(path.dirname(filePath));
     const payload = {
       id: clip.id,
       sectionId: clip.sectionId,
@@ -162,6 +191,9 @@ async function mirrorClipToExport(clip, sections) {
       screenshots: clip.screenshots || [],
       icon: Object.prototype.hasOwnProperty.call(clip, "icon") ? clip.icon : null,
       color: Object.prototype.hasOwnProperty.call(clip, "color") ? clip.color : null,
+      appearanceColor: Object.prototype.hasOwnProperty.call(clip, "appearanceColor")
+        ? clip.appearanceColor
+        : (Object.prototype.hasOwnProperty.call(clip, "userColor") ? clip.userColor : null),
     };
     await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
     console.log(`[SnipBoard] Mirrored clip ${clip.id} to ${filePath}`);
@@ -173,6 +205,7 @@ async function mirrorClipToExport(clip, sections) {
 async function persistClip(incomingClip) {
   const { clips, sections } = loadData();
   let clip = clips.find((c) => c.id === incomingClip.id);
+  const existing = clip ? { ...clip } : null;
 
   if (!clip) {
     const newId = "clip-" + Date.now() + "-" + Math.random().toString(16).slice(2);
@@ -182,8 +215,26 @@ async function persistClip(incomingClip) {
     Object.assign(clip, incomingClip);
   }
 
+  const exportInfo = resolveClipFilename(clip, sections, existing?.exportFilename);
+  if (exportInfo?.filename) {
+    clip.exportFilename = exportInfo.filename;
+  }
+
   saveClips(clips);
   await mirrorClipToExport(clip, sections);
+
+  if (existing?.exportFilename) {
+    const oldDir = getExportDirForSection(existing.sectionId, sections);
+    const oldPath = oldDir ? path.join(oldDir, existing.exportFilename) : null;
+    const newPath = exportInfo?.filePath || null;
+    if (oldPath && oldPath !== newPath && fs.existsSync(oldPath)) {
+      try {
+        fs.unlinkSync(oldPath);
+      } catch (err) {
+        console.warn("[SnipBoard] Failed to remove old clip export file:", err);
+      }
+    }
+  }
   return clip;
 }
 
@@ -202,7 +253,7 @@ function sendJsonResponse(res, status, payload) {
   if (!res.headersSent) {
     res.writeHead(status, {
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body),
+      "Content-Length": globalThis.Buffer.byteLength(body),
     });
   }
   res.end(body);
@@ -401,7 +452,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (globalThis.process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
@@ -459,7 +510,7 @@ ipcMain.handle("create-section", async (_event, name) => {
   migrateDataFiles();
   const { sections } = loadData();
   const base = String(name || "Section").trim() || "Section";
-  const id = base.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\-]/g, "");
+  const id = base.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   const existing = sections.find((s) => s.id === id);
   const finalId = existing ? id + "-" + Math.random().toString(16).slice(2, 6) : id;
 
@@ -596,10 +647,13 @@ ipcMain.handle("save-screenshot", async (_event, payload) => {
       if (!item || !item.dataUrl) continue;
       const base64 = item.dataUrl.split(",")[1];
       if (!base64) continue;
-      const buffer = Buffer.from(base64, "base64");
-      const filename =
-        item.filename ||
-        "shot-" + Date.now() + "-" + Math.random().toString(16).slice(2) + ".png";
+      const fallbackShotName = `shot-${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
+      const rawName =
+        typeof item.filename === "string" && item.filename.trim()
+          ? item.filename.trim()
+          : fallbackShotName;
+      const filename = sanitizeFilename(rawName) || fallbackShotName;
+      const buffer = globalThis.Buffer.from(base64, "base64");
       const filePath = path.join(SCREENSHOTS_DIR, filename);
       fs.writeFileSync(filePath, buffer);
       results.push({ filename, fullPath: filePath });
@@ -808,7 +862,7 @@ ipcMain.handle("capture-screen", async () => {
 
 function isValidUrl(url) {
   try {
-    const u = new URL(url);
+    const u = new globalThis.URL(url);
     return u.protocol === "http:" || u.protocol === "https:";
   } catch {
     return false;
@@ -842,6 +896,52 @@ ipcMain.handle("open-url", async (_event, url) => {
 
 ipcMain.handle("tabs:load", async () => {
   return loadTabsConfigFromDisk();
+});
+
+ipcMain.handle("reorder-tabs", async (_event, payload) => {
+  const orderedTabIds = Array.isArray(payload?.orderedTabIds) ? payload.orderedTabIds : [];
+  if (!orderedTabIds.length) {
+    return { ok: false, error: "Invalid reorder payload" };
+  }
+  const config = loadTabsConfigFromDisk();
+  const tabs = Array.isArray(config.tabs) ? config.tabs : [];
+  const map = new Map(tabs.map((tab) => [tab.id, tab]));
+  const reordered = [];
+  orderedTabIds.forEach((id) => {
+    const tab = map.get(id);
+    if (tab) {
+      reordered.push(tab);
+      map.delete(id);
+    }
+  });
+  map.forEach((tab) => reordered.push(tab));
+  config.tabs = reordered;
+  config.activeTabId = config.activeTabId || "all";
+  saveTabsConfigToDisk(config);
+  return { ok: true, tabs: config.tabs, activeTabId: config.activeTabId };
+});
+
+ipcMain.handle("reorder-clips", async (_event, payload) => {
+  const { sectionId, orderedClipIds } = payload || {};
+  if (!sectionId || !Array.isArray(orderedClipIds)) {
+    return { ok: false, error: "Invalid reorder payload" };
+  }
+  const config = loadTabsConfigFromDisk();
+  if (!Array.isArray(config.tabs)) config.tabs = [];
+  const target = config.tabs.find((tab) => tab.id === sectionId);
+  if (!target) {
+    return { ok: false, error: "Tab not found" };
+  }
+  const normalizedOrder = [];
+  const seen = new Set();
+  orderedClipIds.forEach((id) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    normalizedOrder.push(id);
+  });
+  target.clipOrder = normalizedOrder;
+  saveTabsConfigToDisk(config);
+  return { ok: true, tabs: config.tabs, activeTabId: config.activeTabId };
 });
 
 ipcMain.handle("tabs:save", async (_event, config) => {

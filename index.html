@@ -121,7 +121,16 @@
             </div>
           </div>
 
-          <div class="field-row split source-row">
+          <div class="field-row">
+            <label>Notes</label>
+            <textarea id="notesInput"></textarea>
+          </div>
+
+          <div id="sourceRow" class="field-row triple-row">
+            <div class="captured-col">
+              <label>Captured At</label>
+              <input id="capturedAtInput" readonly />
+            </div>
             <div class="source-url">
               <label>Source URL</label>
               <div class="source-input">
@@ -131,25 +140,26 @@
                 </button>
               </div>
             </div>
-            <div>
+            <div class="source-title">
               <label>Source Title</label>
               <input id="sourceTitleInput" />
             </div>
-          </div>
-
-          <div class="field-row">
-            <label>Notes</label>
-            <textarea id="notesInput"></textarea>
           </div>
         </main>
       </div>
     </div>
 
+    <script src="state.js"></script>
+    <script src="ipc.js"></script>
+    <script src="modals.js"></script>
+    <script src="ui_tabs.js"></script>
+    <script src="ui_clips.js"></script>
+    <script src="ui_editor.js"></script>
     <script defer src="renderer.js"></script>
     <div id="tabContextMenu" class="context-menu">
       <ul>
         <li data-action="rename">Rename</li>
-        <li data-action="schema">Configure Fields…</li>
+        <li data-action="schema">Configure Fields...</li>
         <li data-action="color">Change Color</li>
         <li data-action="icon">Change Icon</li>
         <li data-action="folder">Set Export Folder</li>
@@ -196,5 +206,6 @@
         <img id="shotModalImage" alt="Screenshot preview" />
       </div>
     </div>
+    <div id="toast" class="toast hidden"></div>
   </body>
 </html>

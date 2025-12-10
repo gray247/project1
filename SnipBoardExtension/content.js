@@ -50,7 +50,9 @@
   };
 
   const looksLikeChatMessage = (node) => {
-    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    const elementNodeType =
+      (globalThis.Node || window.Node)?.ELEMENT_NODE ?? 1;
+    if (!node || node.nodeType !== elementNodeType) return false;
     if (readText(node).length === 0) return false;
     return TEXT_CONTAINER_SELECTORS.some((sel) => node.querySelector(sel));
   };
@@ -171,18 +173,17 @@
     });
   };
 
-  const notifySelectionChange = (prevCount) => {
+  const notifySelectionChange = () => {
     const count = selectedMessages.length;
     chrome.runtime.sendMessage({ type: "SNIPBOARD_SELECTION_UPDATED", count });
     renderSelectedHighlights();
   };
 
   const clearSelection = (exitMode = false) => {
-    const prevCount = selectedMessages.length;
     selectedMessages = [];
     selectedMap = new WeakMap();
     renderSelectedHighlights();
-    notifySelectionChange(prevCount);
+    notifySelectionChange();
     if (exitMode) deactivateSelectMode();
   };
 
@@ -241,7 +242,6 @@
     e.stopPropagation();
     const hit = extractMessageAtPoint(e.clientX, e.clientY);
     if (!hit || !hit.node || !hit.content) return;
-    const prevCount = selectedMessages.length;
     if (selectedMap.has(hit.node)) {
       selectedMap.delete(hit.node);
       selectedMessages = selectedMessages.filter((m) => m.node !== hit.node);
@@ -250,7 +250,7 @@
       selectedMap.set(hit.node, entry);
       selectedMessages.push(entry);
     }
-    notifySelectionChange(prevCount);
+    notifySelectionChange();
   };
 
   const handleKeydown = (e) => {
@@ -300,7 +300,12 @@
         .map((m) => `${(m.role || "assistant").toUpperCase()}:\n${m.content || ""}`)
         .join("\n\n");
       const title = `ChatGPT clip (${selectedMessages.length} message${selectedMessages.length === 1 ? "" : "s"})`;
-      fetch("http://127.0.0.1:4050/add-clip", {
+      const browserFetch =
+        globalThis.fetch ||
+        (typeof window !== "undefined" ? window.fetch : undefined) ||
+        (() => Promise.reject(new Error("Fetch API unavailable")));
+
+      browserFetch("http://127.0.0.1:4050/add-clip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -308,14 +313,16 @@
           title,
           tags: [],
           text,
-          sourceUrl: location.href,
+          sourceUrl: window.location.href,
           sourceTitle: document.title || "",
           capturedAt: Date.now(),
         }),
-      }).catch(() => {}).finally(() => {
-        cleanup();
-        sendResponse({ ok: true, saved: true });
-      });
+      })
+        .catch(() => {})
+        .finally(() => {
+          cleanup();
+          sendResponse({ ok: true, saved: true });
+        });
       return true;
     }
     if (msg.type === "SNIPBOARD_GET_SELECTION") {

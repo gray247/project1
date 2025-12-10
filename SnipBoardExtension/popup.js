@@ -176,14 +176,19 @@ async function saveMessages(messages) {
   btn.textContent = "Saving...";
 
   try {
-    await fetch("http://127.0.0.1:4050/add-clip", {
+    const browserFetch =
+      globalThis.fetch ||
+      (typeof window !== "undefined" ? window.fetch : undefined) ||
+      (() => Promise.reject(new Error("Fetch API unavailable")));
+
+    await browserFetch("http://127.0.0.1:4050/add-clip", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
     btn.textContent = "Saved!";
-    setTimeout(() => window.close(), 800);
+    globalThis.setTimeout(() => window.close(), 800);
   } catch (err) {
     console.error("[SnipBoard] POST failed:", err);
     btn.disabled = false;
@@ -210,7 +215,9 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "SNIPBOARD_AUTO_OPEN_POPUP") {
     try {
       window.focus();
-    } catch (_) {}
+    } catch (error) {
+      void error;
+    }
   }
 });
 

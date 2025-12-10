@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(process.cwd(), 'SnipBoardData');
+const DATA_DIR = path.join(globalThis.process.cwd(), 'SnipBoardData');
 const TABS_FILE = path.join(DATA_DIR, 'tabs.json');
 
 function ensureStorage() {
