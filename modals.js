@@ -26,24 +26,28 @@
   function initModals({ state, ipc, dom, helpers }) {
     const { invoke, CHANNELS } = ipc || {};
     const {
-      iconModal,
-      iconChoicesContainer,
-      iconSaveBtn,
-      iconCancelBtn,
-      colorModal,
-      colorSwatches,
-      colorSaveBtn,
-      colorCancelBtn,
-      renameModal,
-      renameInput,
-      renameSaveBtn,
-      renameCancelBtn,
-      screenshotModal,
-      shotModalImage,
+      iconModal = document.getElementById("iconModal"),
+      iconChoicesContainer = document.getElementById("iconChoices"),
+      iconSaveBtn = document.getElementById("iconSaveBtn"),
+      iconCancelBtn = document.getElementById("iconCancelBtn"),
+      colorModal = document.getElementById("colorModal"),
+      colorSwatches = document.getElementById("colorSwatches"),
+      colorSaveBtn = document.getElementById("colorSaveBtn"),
+      colorCancelBtn = document.getElementById("colorCancelBtn"),
+      renameModal = document.getElementById("renameModal"),
+      renameInput = document.getElementById("renameInput"),
+      renameSaveBtn = document.getElementById("renameSaveBtn"),
+      renameCancelBtn = document.getElementById("renameCancelBtn"),
+      screenshotModal = document.getElementById("screenshotModal"),
+      shotModalImage = document.getElementById("shotModalImage"),
+      configureFieldsModal = document.getElementById("configureFieldsModal"),
+      configureFieldsList = document.getElementById("configureFieldsList"),
+      configureFieldsSaveBtn = document.getElementById("configureFieldsSaveBtn"),
+      configureFieldsCloseBtn = document.getElementById("configureFieldsCloseBtn"),
     } = dom || {};
 
     const {
-      renderColorPalette,
+      renderColorPalette: providedRenderColorPalette,
       iconChoices = [],
       updateSection,
       renderSectionsBar,
@@ -54,6 +58,46 @@
       cancelRename,
       persistClipAppearance,
     } = helpers || {};
+    const iconChoicesList = (Array.isArray(iconChoices) && iconChoices.length)
+      ? iconChoices
+      : (Array.isArray(state?.iconChoices) && state.iconChoices.length
+        ? state.iconChoices
+        : (global.SnipState?.iconChoices || []));
+    const defaultSwatches = (Array.isArray(global.SnipState?.TAB_COLORS) && global.SnipState.TAB_COLORS.length)
+      ? global.SnipState.TAB_COLORS
+      : ["#FF4F4F", "#FF914D", "#FFC145", "#F7F3D6", "#7ED957", "#3CB371", "#2ECCFA", "#3A7BEB", "#485B9A", "#6A5ACD", "#A56BF5", "#FF66C4", "#C13CFF", "#6E6E6E", "#CFCFCF"];
+    const renderColorPalette = typeof providedRenderColorPalette === "function"
+      ? providedRenderColorPalette
+      : (container, selectedColor, onSelect, includeNone = false) => {
+          if (!container) return;
+          container.innerHTML = "";
+          if (includeNone) {
+            const noneBtn = document.createElement("button");
+            noneBtn.type = "button";
+            noneBtn.className = "color-swatch" + (!selectedColor ? " selected" : "");
+            noneBtn.dataset.color = "";
+            noneBtn.textContent = "×";
+            noneBtn.onclick = () => {
+              if (typeof onSelect === "function") onSelect("");
+              container.querySelectorAll(".color-swatch").forEach((c) => c.classList.remove("selected"));
+              noneBtn.classList.add("selected");
+            };
+            container.appendChild(noneBtn);
+          }
+          defaultSwatches.forEach((color) => {
+            const swatch = document.createElement("button");
+            swatch.type = "button";
+            swatch.className = "color-swatch" + (color === selectedColor ? " selected" : "");
+            swatch.style.backgroundColor = color;
+            swatch.dataset.color = color;
+            swatch.onclick = () => {
+              if (typeof onSelect === "function") onSelect(color);
+              container.querySelectorAll(".color-swatch").forEach((c) => c.classList.remove("selected"));
+              swatch.classList.add("selected");
+            };
+            container.appendChild(swatch);
+          });
+        };
     const sbModal = document.getElementById('sbModal');
     const sbModalMessage = document.getElementById('sbModalMessage');
     const sbModalInput = document.getElementById('sbModalInput');
@@ -86,6 +130,15 @@
 
     let pendingClipIconId = null;
     let pendingClipColorId = null;
+    let pendingSectionColorCallback = null;
+    let pendingSectionIconCallback = null;
+    let pendingSchemaTabId = null;
+    const schemaOptions =
+      (Array.isArray(global.SnipState?.FIELD_OPTIONS) && global.SnipState.FIELD_OPTIONS.length
+        ? global.SnipState.FIELD_OPTIONS
+        : Array.isArray(global.SnipState?.DEFAULT_SCHEMA)
+        ? global.SnipState.DEFAULT_SCHEMA
+        : []);
 
     function closeRenameModal() {
       state.pendingRenameSectionId = null;
@@ -139,12 +192,20 @@
      * Show icon picker for a clip.
      * @param {Object} clip
      */
-    function openClipIconPicker(clip) {
+    function openClipIconPicker(clip, opts = {}) {
       if (!iconModal || !iconChoicesContainer) return;
+      const hasCallback = typeof opts.onSave === "function";
       pendingClipIconId = clip.id;
+      pendingSectionIconCallback = hasCallback ? opts.onSave : null;
+      if (opts.section) {
+        state.pendingIconSection = clip.id;
+        pendingClipIconId = null;
+      } else {
+        state.pendingIconSection = null;
+      }
       state.selectedIcon = clip.icon || "";
       iconChoicesContainer.innerHTML = "";
-      iconChoices.forEach((choice) => {
+      iconChoicesList.forEach((choice) => {
         const isSelected =
           state.selectedIcon === choice.id ||
           state.selectedIcon === choice.emoji ||
@@ -173,10 +234,18 @@
      * Show color picker for a clip.
      * @param {Object} clip
      */
-    function openClipColorPicker(clip) {
+    function openClipColorPicker(clip, opts = {}) {
       if (!colorModal || !colorSwatches) return;
+      const hasCallback = typeof opts.onSave === "function";
       pendingClipColorId = clip.id;
-      state.selectedColor = clip.appearanceColor || "";
+      pendingSectionColorCallback = hasCallback ? opts.onSave : null;
+      if (opts.section) {
+        state.pendingColorSection = clip.id;
+        pendingClipColorId = null;
+      } else {
+        state.pendingColorSection = null;
+      }
+      state.selectedColor = clip.color || "";
       renderColorPalette(colorSwatches, state.selectedColor, (color) => {
         state.selectedColor = color || "";
       }, true);
@@ -215,10 +284,14 @@
       colorSaveBtn.onclick = async () => {
         if (pendingClipColorId) {
           const clip = state.clips.find((c) => c.id === pendingClipColorId);
-          if (clip && persistClipAppearance) {
-            await persistClipAppearance(clip, { appearanceColor: state.selectedColor || null });
+          if (pendingSectionColorCallback) {
+            await pendingSectionColorCallback(state.selectedColor || "", pendingClipColorId);
+          } else if (clip && persistClipAppearance) {
+            await persistClipAppearance(clip, { color: state.selectedColor || null });
           }
           pendingClipColorId = null;
+          pendingSectionColorCallback = null;
+          state.pendingColorSection = null;
           if (colorModal) colorModal.classList.remove("is-open");
           return;
         }
@@ -227,18 +300,25 @@
           if (colorModal) colorModal.classList.remove("is-open");
           return;
         }
-        const color = state.selectedColor || "";
-        await updateSection(targetId, { color });
-        const sec = state.sections.find((s) => s.id === targetId);
-        if (sec) sec.color = color;
-        const tab = state.tabs.find((t) => t.id === targetId);
-        if (tab) tab.color = color;
-        const targetTab = global.tabsState?.tabs?.find((t) => t.id === targetId);
-        if (targetTab) targetTab.color = color;
-        global.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
-        await invoke(CHANNELS.SAVE_TABS, global.tabsState);
-        renderTabs();
+        if (pendingSectionColorCallback) {
+          await pendingSectionColorCallback(state.selectedColor || "", targetId);
+        } else if (persistClipAppearance) {
+          await persistClipAppearance({ id: targetId }, { color: state.selectedColor || "" });
+        } else {
+          const color = state.selectedColor || "";
+          await updateSection(targetId, { color });
+          const sec = state.sections.find((s) => s.id === targetId);
+          if (sec) sec.color = color;
+          const tab = state.tabs.find((t) => t.id === targetId);
+          if (tab) tab.color = color;
+          const targetTab = global.tabsState?.tabs?.find((t) => t.id === targetId);
+          if (targetTab) targetTab.color = color;
+          global.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+          await invoke(CHANNELS.SAVE_TABS, global.tabsState);
+          renderTabs();
+        }
         if (colorModal) colorModal.classList.remove("is-open");
+        pendingSectionColorCallback = null;
         state.pendingColorSection = null;
         renderSectionsBar();
         scheduleSaveTabsConfig();
@@ -248,6 +328,7 @@
       colorCancelBtn.onclick = () => {
         pendingClipColorId = null;
         state.pendingColorSection = null;
+        pendingSectionColorCallback = null;
         if (colorModal) colorModal.classList.remove("is-open");
       };
     }
@@ -256,10 +337,14 @@
       iconSaveBtn.onclick = async () => {
         if (pendingClipIconId) {
           const clip = state.clips.find((c) => c.id === pendingClipIconId);
-          if (clip && persistClipAppearance) {
+          if (pendingSectionIconCallback) {
+            await pendingSectionIconCallback(state.selectedIcon || "", pendingClipIconId);
+          } else if (clip && persistClipAppearance) {
             await persistClipAppearance(clip, { icon: state.selectedIcon || null });
           }
           pendingClipIconId = null;
+          pendingSectionIconCallback = null;
+          state.pendingIconSection = null;
           if (iconModal) iconModal.classList.remove("is-open");
           return;
         }
@@ -268,26 +353,34 @@
           if (iconModal) iconModal.classList.remove("is-open");
           return;
         }
-        await updateSection(targetId, { icon: state.selectedIcon || "" });
-        const sec = state.sections.find((s) => s.id === targetId);
-        if (sec) sec.icon = state.selectedIcon || "";
-        const tab = state.tabs.find((t) => t.id === targetId);
-        if (tab) tab.icon = state.selectedIcon || "";
-        const targetTab = global.tabsState?.tabs?.find((t) => t.id === targetId);
-        if (targetTab) targetTab.icon = state.selectedIcon || "";
+        if (pendingSectionIconCallback) {
+          await pendingSectionIconCallback(state.selectedIcon || "", targetId);
+        } else if (persistClipAppearance) {
+          await persistClipAppearance({ id: targetId }, { icon: state.selectedIcon || "" });
+        } else {
+          await updateSection(targetId, { icon: state.selectedIcon || "" });
+          const sec = state.sections.find((s) => s.id === targetId);
+          if (sec) sec.icon = state.selectedIcon || "";
+          const tab = state.tabs.find((t) => t.id === targetId);
+          if (tab) tab.icon = state.selectedIcon || "";
+          const targetTab = global.tabsState?.tabs?.find((t) => t.id === targetId);
+          if (targetTab) targetTab.icon = state.selectedIcon || "";
+          global.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
+          await invoke(CHANNELS.SAVE_TABS, global.tabsState);
+          renderTabs();
+          scheduleSaveTabsConfig();
+        }
+        pendingSectionIconCallback = null;
         if (iconModal) iconModal.classList.remove("is-open");
         state.pendingIconSection = null;
         renderSectionsBar();
-        global.tabsState = { tabs: state.tabs, activeTabId: state.activeTabId || "all" };
-        await invoke(CHANNELS.SAVE_TABS, global.tabsState);
-        renderTabs();
-        scheduleSaveTabsConfig();
       };
     }
     if (iconCancelBtn) {
       iconCancelBtn.onclick = () => {
         pendingClipIconId = null;
         state.pendingIconSection = null;
+        pendingSectionIconCallback = null;
         if (iconModal) iconModal.classList.remove("is-open");
       };
     }
@@ -362,7 +455,7 @@
     function findIconChoice(value) {
       if (!value) return null;
       const normalized = String(value).trim().toLowerCase();
-      const match = iconChoices.find(
+      const match = iconChoicesList.find(
         (choice) =>
           (choice.id && choice.id.toLowerCase() === normalized) ||
           (choice.emoji && choice.emoji === value) ||
@@ -502,21 +595,67 @@
       onSave(value, clip);
     }
 
-    async function openChangeClipIconModal(clip, onSave) {
-      if (!clip || typeof onSave !== "function") return;
-      const response = await openTextModal("Icon (emoji or short code)", clip.icon || "");
-      const value = cleanInput(response);
-      if (!value) return;
-      onSave(value, clip);
+    function openChangeClipIconModal(entity, opts = {}) {
+      if (!entity) return;
+      openClipIconPicker(entity, opts);
     }
 
-    async function openChangeClipColorModal(clip, onSave) {
-      if (!clip || typeof onSave !== "function") return;
-      const current = clip.appearanceColor || clip.color || "";
-      const response = await openTextModal("Color value (e.g. #ffcc00)", current);
-      const value = cleanInput(response);
-      if (!value) return;
-      onSave(value, clip);
+    function openChangeClipColorModal(entity, opts = {}) {
+      if (!entity) return;
+      openClipColorPicker(entity, opts);
+    }
+
+    function closeConfigureFieldsModal() {
+      pendingSchemaTabId = null;
+      if (configureFieldsModal) configureFieldsModal.classList.remove("is-open");
+      if (configureFieldsList) configureFieldsList.innerHTML = "";
+    }
+
+    function openConfigureFieldsModal(tab, onSave) {
+      if (!tab || !configureFieldsModal || !configureFieldsList) return;
+      pendingSchemaTabId = tab.id;
+      const activeSchema = Array.isArray(tab.schema) && tab.schema.length
+        ? tab.schema
+        : (Array.isArray(global.SnipState?.DEFAULT_SCHEMA) ? global.SnipState.DEFAULT_SCHEMA : []);
+      configureFieldsList.innerHTML = "";
+      schemaOptions.forEach((field) => {
+        const row = document.createElement("label");
+        row.className = "configure-field-row";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = field;
+        input.checked = activeSchema.includes(field);
+        const span = document.createElement("span");
+        span.textContent = field;
+        row.appendChild(input);
+        row.appendChild(span);
+        configureFieldsList.appendChild(row);
+      });
+      configureFieldsModal.classList.add("is-open");
+      const saveHandler = async () => {
+        const checked = Array.from(configureFieldsList.querySelectorAll('input[type="checkbox"]'))
+          .filter((el) => el.checked)
+          .map((el) => el.value)
+          .filter(Boolean);
+        const normalized = checked.length
+          ? checked.filter((field) => schemaOptions.includes(field))
+          : (Array.isArray(global.SnipState?.DEFAULT_SCHEMA) ? global.SnipState.DEFAULT_SCHEMA : []);
+        if (typeof onSave === "function") {
+          await onSave(normalized, tab);
+        }
+        closeConfigureFieldsModal();
+      };
+      if (configureFieldsSaveBtn) {
+        configureFieldsSaveBtn.onclick = saveHandler;
+      }
+      if (configureFieldsCloseBtn) {
+        configureFieldsCloseBtn.onclick = closeConfigureFieldsModal;
+      }
+      configureFieldsModal.addEventListener("click", (event) => {
+        if (event.target === configureFieldsModal) {
+          closeConfigureFieldsModal();
+        }
+      });
     }
 
     async function openRenameSectionModal(section, onSave) {
@@ -543,6 +682,8 @@
       openRenameSectionModal,
       openPromptModal,
       openConfirmModal,
+      openConfigureFieldsModal,
+      closeConfigureFieldsModal,
     };
   }
 

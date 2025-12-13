@@ -110,7 +110,7 @@
     const persistClip = async (clip) => {
       if (!clip) return;
       try {
-        const saved = await (api.saveClip ? api.saveClip(clip) : Promise.resolve(clip));
+        const saved = await (api.saveClip ? api.saveClip(clip, { mirror: false }) : Promise.resolve(clip));
         const normalized = saved || clip;
         const existingIndex = (app.clips || []).findIndex((item) => item.id === normalized.id);
         if (existingIndex !== -1) {
@@ -136,6 +136,12 @@
       const question = `Delete clip "${clip.title || clip.id}"?`;
       const confirmed = await modalsApi?.openConfirmModal?.(question);
       if (!confirmed) return;
+      const renderer = getRendererApi();
+      const locked = renderer?.isSectionLocked?.(clip.sectionId || getActiveSectionId());
+      if (locked) {
+        global.SnipToast?.show?.('Tab is locked: cannot delete clips.');
+        return;
+      }
       try {
         const result = await (api.deleteClip ? api.deleteClip(clip.id) : Promise.resolve({ ok: true }));
         if (result?.blocked) {
@@ -166,21 +172,28 @@
         });
       },
       icon: (clip) => {
-        modalsApi?.openChangeClipIconModal?.(clip, async (value) => {
-          if (!value) return;
-          clip.icon = value;
-          await persistClip(clip);
+        modalsApi?.openChangeClipIconModal?.(clip, {
+          onSave: async (icon) => {
+            clip.icon = icon || '';
+            await persistClip(clip);
+          },
         });
       },
       color: (clip) => {
-        modalsApi?.openChangeClipColorModal?.(clip, async (value) => {
-          if (!value) return;
-          clip.appearanceColor = value;
-          clip.color = value;
-          await persistClip(clip);
+        modalsApi?.openChangeClipColorModal?.(clip, {
+          onSave: async (color) => {
+            clip.color = color || '';
+            await persistClip(clip);
+          },
         });
       },
       delete: (clip) => {
+        const renderer = getRendererApi();
+        const locked = renderer?.isSectionLocked?.(clip.sectionId || getActiveSectionId());
+        if (locked) {
+          global.SnipToast?.show?.('Tab is locked: cannot delete clips.');
+          return;
+        }
         deleteClip(clip);
       },
     };
@@ -213,6 +226,16 @@
       clipMenu.style.left = `${x}px`;
       clipMenu.style.top = `${y}px`;
       clipMenu.style.display = 'block';
+      const deleteItem = clipMenu.querySelector('[data-action="delete"]');
+      if (deleteItem) {
+        const renderer = getRendererApi();
+        const locked = renderer?.isSectionLocked?.(clip.sectionId || getActiveSectionId());
+        if (locked) {
+          deleteItem.classList.add('disabled');
+        } else {
+          deleteItem.classList.remove('disabled');
+        }
+      }
     };
 
     const renderClipList = () => {
@@ -227,16 +250,20 @@
         row.className = 'clip-row';
         row.dataset.clipId = clip.id;
         row.draggable = true;
+        if (clip.color) {
+          row.classList.add('clip-row--colored', 'has-user-color');
+          row.style.setProperty('--clip-accent', clip.color);
+          row.style.setProperty('--appearanceColor', clip.color);
+          const colorStrip = doc.createElement('div');
+          colorStrip.className = 'clip-color-strip';
+          colorStrip.style.backgroundColor = clip.color;
+          row.appendChild(colorStrip);
+        }
 
         if (clip.id === app.currentClipId) {
           row.classList.add('clip-row--active', 'active');
         }
 
-        const checkbox = doc.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.clipId = clip.id;
-        checkbox.addEventListener('click', (event) => event.stopPropagation());
-        row.appendChild(checkbox);
         const iconEl = createClipIconElement(clip);
         if (iconEl) {
           row.appendChild(iconEl);
@@ -259,11 +286,27 @@
 
         row.addEventListener('contextmenu', (event) => {
           event.preventDefault();
+          event.stopPropagation();
           showClipContextMenu(clip, event.clientX, event.clientY);
         });
 
-        row.addEventListener('dragstart', () => {
+        row.addEventListener('dragstart', (event) => {
           dragSourceId = clip.id;
+          if (typeof DataTransfer !== 'undefined' && event?.dataTransfer) {
+            try {
+              event.dataTransfer.setData('application/x-snipboard-clip-id', clip.id);
+              event.dataTransfer.setData('text/plain', clip.text || '');
+              const safeTitle = clip.title || 'Clip';
+              const safeBody = (clip.text || '').replace(/\n/g, '<br/>');
+              event.dataTransfer.setData(
+                'text/html',
+                `<strong>${safeTitle}</strong><br/>${safeBody}`
+              );
+              event.dataTransfer.effectAllowed = 'copyMove';
+            } catch (_) {
+              // ignore if dataTransfer is unavailable
+            }
+          }
           row.classList.add('clip-row--dragging');
         });
 

@@ -31,7 +31,6 @@
    *   screenshots: string[]
    *   icon: string|null
    *   color: string|null
-   *   appearanceColor: string|null
    *   sectionId: string
    *   createdAt?: number
    *   modifiedAt?: number
@@ -133,7 +132,6 @@
   const DEFAULT_CLIP_DISPLAY = {
     icon: null,
     color: null,
-    appearanceColor: null,
   };
 
   const iconChoices = [
@@ -247,11 +245,12 @@
       base.sectionId = base.section.id || base.section;
     }
     if (base.icon === undefined) base.icon = DEFAULT_CLIP_DISPLAY.icon;
-    if (base.color === undefined) base.color = DEFAULT_CLIP_DISPLAY.color;
-    if (base.appearanceColor === undefined && base.userColor !== undefined) {
-      base.appearanceColor = base.userColor;
+    if ((base.color === undefined || base.color === null || base.color === "") && (base.appearanceColor || base.userColor)) {
+      base.color = base.appearanceColor || base.userColor;
     }
-    if (base.appearanceColor === undefined) base.appearanceColor = DEFAULT_CLIP_DISPLAY.appearanceColor;
+    if (base.color === undefined) base.color = DEFAULT_CLIP_DISPLAY.color;
+    if (base.appearanceColor !== undefined) delete base.appearanceColor;
+    if (base.userColor !== undefined) delete base.userColor;
     return base;
   }
 

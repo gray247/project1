@@ -178,6 +178,9 @@ async function mirrorClipToExport(clip, sections) {
     }
     const filePath = exportInfo.filePath;
     ensureDir(path.dirname(filePath));
+    const legacyColor = Object.prototype.hasOwnProperty.call(clip, "appearanceColor")
+      ? clip.appearanceColor
+      : (Object.prototype.hasOwnProperty.call(clip, "userColor") ? clip.userColor : null);
     const payload = {
       id: clip.id,
       sectionId: clip.sectionId,
@@ -190,10 +193,9 @@ async function mirrorClipToExport(clip, sections) {
       capturedAt: clip.capturedAt || Date.now(),
       screenshots: clip.screenshots || [],
       icon: Object.prototype.hasOwnProperty.call(clip, "icon") ? clip.icon : null,
-      color: Object.prototype.hasOwnProperty.call(clip, "color") ? clip.color : null,
-      appearanceColor: Object.prototype.hasOwnProperty.call(clip, "appearanceColor")
-        ? clip.appearanceColor
-        : (Object.prototype.hasOwnProperty.call(clip, "userColor") ? clip.userColor : null),
+      color: Object.prototype.hasOwnProperty.call(clip, "color")
+        ? clip.color
+        : legacyColor,
     };
     await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
     console.log(`[SnipBoard] Mirrored clip ${clip.id} to ${filePath}`);
@@ -214,6 +216,8 @@ async function persistClip(incomingClip, options = {}) {
   } else {
     Object.assign(clip, incomingClip);
   }
+  if (clip.appearanceColor !== undefined) delete clip.appearanceColor;
+  if (clip.userColor !== undefined) delete clip.userColor;
 
   const exportInfo = resolveClipFilename(clip, sections, existing?.exportFilename);
   if (exportInfo?.filename) {

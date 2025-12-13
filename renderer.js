@@ -33,8 +33,22 @@
     tagFilter: '',
   };
 
-  const getCurrentClip = () =>
-    state.clips.find((clip) => clip.id === state.currentClipId) || null;
+  let refreshFullQueue = Promise.resolve();
+
+  const resolveClipForSection = (sectionId) => {
+    const clips = state.clips || [];
+    const targetSection = sectionId || getActiveSectionId();
+    if (targetSection === 'all') {
+      return clips.find((clip) => clip.id === state.currentClipId) || clips[0] || null;
+    }
+    const currentInSection = clips.find(
+      (clip) => clip.id === state.currentClipId && clip.sectionId === targetSection
+    );
+    if (currentInSection) return currentInSection;
+    return clips.find((clip) => clip.sectionId === targetSection) || null;
+  };
+
+  const getCurrentClip = () => resolveClipForSection(getActiveSectionId());
 
   function normalizeTags(raw) {
     if (Array.isArray(raw)) {
@@ -68,6 +82,11 @@
         .map((tag) => (tag ? String(tag).trim() : ''))
         .filter(Boolean);
     }
+    if ((clip.color === undefined || clip.color === null || clip.color === '') && (clip.appearanceColor || clip.userColor)) {
+      clip.color = clip.appearanceColor || clip.userColor || '';
+    }
+    if (clip.appearanceColor !== undefined) delete clip.appearanceColor;
+    if (clip.userColor !== undefined) delete clip.userColor;
     if (!clip.sectionId) clip.sectionId = 'inbox';
     clip.tags = normalizeTags(clip.tags);
     normalizeClipScreenshots(clip);
@@ -208,6 +227,35 @@
     }
   };
 
+  function isCurrentSectionLocked(sectionId) {
+    const sectionIdToCheck = sectionId || getActiveSectionId();
+    if (sectionIdToCheck === 'all') return false;
+    const section = (state.sections || []).find((sec) => sec.id === sectionIdToCheck);
+    return Boolean(section?.locked);
+  }
+
+  function updateEditorControls() {
+    const clip = getCurrentClip();
+    const enabled = Boolean(clip);
+    const locked = isCurrentSectionLocked();
+    if (saveClipBtn) saveClipBtn.disabled = !enabled;
+    if (deleteClipBtn) deleteClipBtn.disabled = !enabled || locked;
+    if (addShotBtn) addShotBtn.disabled = !enabled;
+  }
+
+  const sanitizeAppearancePatch = (patch = {}) => {
+    const clean = {};
+    if (typeof patch.color === 'string') {
+      const c = patch.color.trim();
+      if (c && !/[<>]/.test(c) && c.length <= 64) clean.color = c;
+    }
+    if (typeof patch.icon === 'string') {
+      const i = patch.icon.trim();
+      if (i && !/[<>]/.test(i) && i.length <= 16) clean.icon = i;
+    }
+    return clean;
+  };
+
   // Editor screenshots are independent of the clip list so we load them separately.
   async function renderEditorScreenshots(clip) {
     if (!screenshotBox) return;
@@ -236,9 +284,35 @@
       img.style.borderRadius = '10px';
       thumb.appendChild(img);
 
-      thumb.addEventListener('dragstart', (event) => {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', thumb.dataset.file);
+      thumb.addEventListener('dragstart', async (event) => {
+        event.dataTransfer.effectAllowed = 'copyMove';
+        const filename = thumb.dataset.file;
+        if (filename) {
+          try {
+            event.dataTransfer.setData('text/plain', filename);
+            const check = await safeChannel?.(CHANNELS.CHECK_SCREENSHOT_PATH, filename);
+            const fullPath = check?.fullPath || '';
+            const fileUrl =
+              (fullPath ? `file://${fullPath.replace(/\\/g, '/')}` : '') ||
+              (await api.getScreenshotUrl?.(filename)) ||
+              '';
+            if (fileUrl) {
+              event.dataTransfer.setData('text/uri-list', fileUrl);
+              try {
+                const response = await fetch(fileUrl);
+                const blob = await response.blob();
+                if (blob && event.dataTransfer?.items) {
+                  const fileObj = new File([blob], filename, { type: blob.type || 'image/png' });
+                  event.dataTransfer.items.add(fileObj);
+                }
+              } catch (err) {
+                console.warn('[SnipBoard] drag image blob failed', err);
+              }
+            }
+          } catch (err) {
+            console.warn('[SnipBoard] screenshot dragstart failed', err);
+          }
+        }
         thumb.classList.add('screenshot-thumb--dragging');
       });
       thumb.addEventListener('dragover', (event) => {
@@ -574,8 +648,12 @@
     }
   }
 
+  function getActiveSectionId() {
+    return state.activeTabId || state.currentSectionId || 'all';
+  }
+
   function getCurrentSection() {
-    const sectionId = state.currentSectionId || state.activeTabId || 'all';
+    const sectionId = getActiveSectionId();
     return (state.sections || []).find((sec) => sec.id === sectionId) || null;
   }
 
@@ -587,10 +665,18 @@
       if (clipTabPathEl) clipTabPathEl.textContent = '';
       return;
     }
-    clipTabNameEl.textContent = section.name || section.id || '';
-    if (clipTabPathEl) {
-      clipTabPathEl.textContent = section.exportPath || '';
-    }
+    const lockedIconEl = document.createElement('span');
+    lockedIconEl.className = 'sidebar-lock-icon';
+    lockedIconEl.textContent = section.locked ? '🔒' : '🔓';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'sidebar-tab-name';
+    nameEl.textContent = section.name || section.id || '';
+
+    clipTabNameEl.innerHTML = '';
+    clipTabNameEl.appendChild(lockedIconEl);
+    clipTabNameEl.appendChild(nameEl);
+    if (clipTabPathEl) clipTabPathEl.textContent = section.exportPath || '';
   }
 
   function refreshSections() {
@@ -610,24 +696,40 @@
   }
 
   async function refreshEditor() {
-    const clip =
-      state.clips.find((item) => item.id === state.currentClipId) ||
-      state.clips[0] ||
-      null;
+    const activeSectionId = getActiveSectionId();
+    const clip = resolveClipForSection(activeSectionId);
     if (!clip) {
+      state.currentClipId = null;
       editorApi?.loadClipIntoEditor?.(null);
       if (screenshotBox) screenshotBox.innerHTML = '';
+      updateEditorControls();
       return;
     }
     ensureCurrentClipSection(clip);
     state.currentClipId = clip.id;
-    state.currentSectionId = clip.sectionId;
+    if (state.currentSectionId === null || state.currentSectionId === undefined) {
+      state.currentSectionId = clip.sectionId;
+    }
     refreshSectionSelect();
     editorApi?.loadClipIntoEditor?.(clip);
     const schema =
       tabsApi?.getActiveTabSchema?.() || clip?.schema || DEFAULT_SCHEMA;
     editorApi?.applySchemaVisibility?.(schema);
-    await renderEditorScreenshots(clip);
+    const allowScreenshots = Array.isArray(schema) ? schema.includes('screenshots') : true;
+    if (!allowScreenshots) {
+      if (screenshotBox) {
+        const row = screenshotBox.closest('.field-row');
+        if (row) row.style.display = 'none';
+        screenshotBox.innerHTML = '';
+      }
+    } else {
+      if (screenshotBox) {
+        const row = screenshotBox.closest('.field-row');
+        if (row) row.style.display = '';
+      }
+      await renderEditorScreenshots(clip);
+    }
+    updateEditorControls();
   }
 
   async function handleAddScreenshot() {
@@ -676,7 +778,7 @@
       capturedAt: Date.now(),
     };
     try {
-      const saved = (await api.saveClip?.(clip)) || clip;
+      const saved = (await api.saveClip?.(clip, { mirror: false })) || clip;
       const clipId = saved?.id || clip.id;
       if (!clipId) return;
       await refreshFull(clipId);
@@ -705,6 +807,17 @@
   const notesInput = document.getElementById('notesInput');
   const tagsInput = document.getElementById('tagsInput');
   const capturedAtInput = document.getElementById('capturedAtInput');
+  const capturedAtInputs = Array.from(document.querySelectorAll('#capturedAtInput'));
+  if (capturedAtInputs.length > 1) {
+    capturedAtInputs.slice(1).forEach((node) => {
+      const parentRow = node.closest('.field-row');
+      if (parentRow && parentRow.parentNode) {
+        parentRow.parentNode.removeChild(parentRow);
+      } else if (node.parentNode) {
+        node.parentNode.removeChild(node);
+      }
+    });
+  }
   const sourceUrlInput = document.getElementById('sourceUrlInput');
   const sourceTitleInput = document.getElementById('sourceTitleInput');
   const screenshotBox = document.getElementById('screenshotContainer');
@@ -719,11 +832,78 @@
   const tagFilterInput = document.getElementById('tagFilterInput');
   const sortMenu = document.getElementById('sortMenu');
 
+  function persistClipAppearance(entity, patch = {}) {
+    if (!entity || !entity.id) return;
+    const sanitized = sanitizeAppearancePatch(patch);
+    if (typeof entity.sectionId === 'string') {
+      const clip = { ...entity, ...sanitized };
+      return api
+        .saveClip?.(clip, { mirror: false })
+        .then((saved) => {
+          if (saved) {
+            const normalized = sanitizeClipData(normalizeClip(saved));
+            const idx = (state.clips || []).findIndex((item) => item.id === saved.id);
+            if (idx !== -1) {
+              state.clips[idx] = normalized;
+            } else {
+              state.clips.push(normalized);
+            }
+          }
+          refreshClipList();
+          void refreshEditor();
+        })
+        .catch((err) => {
+          console.error('[SnipBoard] persistClipAppearance failed', err);
+          window.SnipToast?.show?.('Failed to save appearance');
+        });
+    }
+    return safeInvoke?.(CHANNELS.UPDATE_SECTION, { id: entity.id, patch: sanitized })
+      .then((result) => {
+        if (!result?.ok) return;
+        const tab = (state.tabs || []).find((item) => item.id === entity.id);
+        if (tab) Object.assign(tab, sanitized);
+        syncSectionsFromTabs();
+        refreshSections();
+        refreshClipList();
+      })
+      .catch((err) => {
+        console.error('[SnipBoard] persistClipAppearance failed', err);
+        window.SnipToast?.show?.('Failed to save appearance');
+      });
+  }
+
+  const updateSection = (id, patch) =>
+    safeChannel?.(CHANNELS.UPDATE_SECTION, { id, patch });
+
+  const renderSectionsBar = () => tabsApi?.renderTabs?.();
+
+  const scheduleSaveTabsConfig = async () => {
+    try {
+      const payload = {
+        tabs: state.tabs || [],
+        activeTabId: state.activeTabId || 'all',
+      };
+      await safeChannel?.(CHANNELS.SAVE_TABS, payload);
+    } catch (err) {
+      console.warn('[SnipBoard] scheduleSaveTabsConfig failed', err);
+    }
+  };
+
   const modalsApi = initModals
     ? initModals({
         state,
         ipc: { CHANNELS, invoke, safeInvoke },
         dom: {},
+        helpers: {
+          persistClipAppearance,
+          updateSection,
+          renderSectionsBar,
+          renderTabs: () => tabsApi?.renderTabs?.(),
+          scheduleSaveTabsConfig,
+          closeQuickMenus: () => {},
+          commitRename: () => {},
+          cancelRename: () => {},
+        },
       })
     : null;
 
@@ -790,17 +970,39 @@
 
   let lastSignature = '';
 
-  const hydrateState = (payload = {}) => {
+  const hydrateState = (payload = {}, selectedSectionId) => {
+    const prevActive = selectedSectionId || state.activeTabId || state.currentSectionId;
+    const prevClip = state.currentClipId;
     state.clips = (payload.clips || state.clips || [])
       .map(normalizeClip)
       .map((clip) => sanitizeClipData(clip));
     state.tabs = payload.tabs || state.tabs;
+    const tabsList = state.tabs || [];
+    const targetSection = selectedSectionId || prevActive;
+    const hasPrev = tabsList.some((t) => t.id === targetSection);
     state.activeTabId =
-      payload.activeTabId || state.activeTabId || state.tabs[0]?.id || 'all';
+      (hasPrev && targetSection) ||
+      state.activeTabId ||
+      payload.activeTabId ||
+      tabsList[0]?.id ||
+      'all';
     state.currentSectionId = state.activeTabId;
     state.searchIndex = updateSearchIndex(state.clips);
     lastSignature = computeSignature(state.clips);
-    state.currentClipId = state.currentClipId || state.clips[0]?.id || null;
+
+    const activeSectionId = getActiveSectionId();
+    const clips = state.clips || [];
+    let nextClip = null;
+    if (prevClip) {
+      const prevClipObj = clips.find((c) => c.id === prevClip);
+      if (prevClipObj && (activeSectionId === 'all' || prevClipObj.sectionId === activeSectionId)) {
+        nextClip = prevClipObj;
+      }
+    }
+    if (!nextClip) {
+      nextClip = resolveClipForSection(activeSectionId);
+    }
+    state.currentClipId = nextClip ? nextClip.id : null;
     syncSectionsFromTabs();
     refreshSectionSelect();
   };
@@ -811,28 +1013,36 @@
     void refreshEditor();
   };
 
-  const refreshFull = async (selectedClipId) => {
-    try {
-      if (selectedClipId) {
-        state.currentClipId = selectedClipId;
-      }
-      const data = await api.getData?.();
-      const tabsConfig = await safeChannel(CHANNELS.LOAD_TABS);
-      hydrateState({
-        clips: data?.clips,
-        tabs: tabsConfig?.tabs,
-        activeTabId: tabsConfig?.activeTabId,
-      });
-      if (selectedClipId) {
-        const exists = (state.clips || []).some((clip) => clip.id === selectedClipId);
-        if (exists) {
+  const refreshFull = (selectedClipId, selectedSectionId) => {
+    refreshFullQueue = refreshFullQueue.then(async () => {
+      try {
+        if (selectedClipId) {
           state.currentClipId = selectedClipId;
         }
+        const targetSectionId =
+          selectedSectionId || state.activeTabId || state.currentSectionId || 'all';
+        const data = await api.getData?.();
+        const tabsConfig = await safeChannel(CHANNELS.LOAD_TABS);
+        hydrateState({
+          clips: data?.clips,
+          tabs: tabsConfig?.tabs,
+          activeTabId: tabsConfig?.activeTabId,
+        }, targetSectionId);
+        if (selectedClipId) {
+          const exists = (state.clips || []).some((clip) => clip.id === selectedClipId);
+          if (exists) {
+            state.currentClipId = selectedClipId;
+          }
+        }
+        renderAll();
+      } catch (err) {
+        console.warn('[SnipBoard] refreshFull failed', err);
+      } finally {
+        updateEditorControls();
       }
-      renderAll();
-    } catch (err) {
-      console.warn('[SnipBoard] refreshFull failed', err);
-    }
+    });
+    refreshFullQueue = refreshFullQueue.catch(() => {});
+    return refreshFullQueue;
   };
 
   window.SnipRenderer = {
@@ -842,6 +1052,9 @@
     refreshClipThumbnails,
     updateActiveSectionLabel,
     getCurrentSection,
+    getActiveSectionId,
+    refreshFull,
+    isSectionLocked: isCurrentSectionLocked,
   };
 
   const REFRESH_EVENT = 'snipboard:refresh-data';

@@ -16,20 +16,44 @@
     const callRefreshSections = () => getRendererApi().refreshSections?.();
     const callRefreshClipList = () => getRendererApi().refreshClipList?.();
     const callRefreshEditor = () => getRendererApi().refreshEditor?.();
-    const sanitizePromptValue = (value) => {
-      if (value === null || value === undefined) return '';
-      return String(value).trim().slice(0, 100);
-    };
     const notifySectionUpdate = () => {
-      callRefreshSections();
-      callRefreshClipList();
-      dispatchSectionsUpdated();
-      modalsApi?.refreshData?.();
+      const renderer = getRendererApi();
+      const activeSection =
+        renderer?.getActiveSectionId?.() ||
+        app.activeTabId ||
+        app.currentSectionId ||
+        'all';
+      if (renderer?.refreshFull) {
+        renderer.refreshFull(undefined, activeSection);
+      } else {
+        const EventCtor = global.CustomEvent || global.Event;
+        if (doc && EventCtor) {
+          const event = new EventCtor('snipboard:refresh-data', {
+            detail: { type: 'section', id: activeSection },
+          });
+          doc.dispatchEvent(event);
+        }
+        dispatchSectionsUpdated();
+      }
     };
 
     const cleanSectionName = (value) => {
       if (value === null || value === undefined) return '';
       return String(value).trim().slice(0, 100);
+    };
+
+    const persistTabsConfig = async () => {
+      try {
+        await safeInvoke(CHANNELS.SAVE_TABS, {
+          tabs: app.tabs || [],
+          activeTabId: app.activeTabId || 'all',
+        });
+        return true;
+      } catch (err) {
+        console.error('[SnipTabs] save tabs failed', err);
+        global.alert?.('Unable to save tabs.');
+        return false;
+      }
     };
 
     const persistSectionOrder = async () => {
@@ -102,61 +126,71 @@
       if (event.key === 'Escape') hideTabContextMenu();
     };
 
+    const toggleTabLock = async (tab) => {
+      if (!tab) return;
+      try {
+        const result = await safeInvoke(CHANNELS.SET_SECTION_LOCKED, {
+          id: tab.id,
+          locked: !tab.locked,
+        });
+        if (!result?.ok) {
+          global.alert?.(result?.error || 'Unable to update lock state.');
+          return;
+        }
+        tab.locked = !tab.locked;
+        renderTabs();
+        const persisted = await persistTabsConfig();
+        if (!persisted) return;
+        notifySectionUpdate();
+      } catch (err) {
+        console.error('[SnipTabs] lock toggle failed', err);
+      }
+    };
+
     const handleTabContextAction = async (action, sectionId) => {
       if (!action || !sectionId) return;
       const tab = (app.tabs || []).find((item) => item.id === sectionId);
       if (!tab) return;
-      if (action === 'rename') {
+      if (action === 'schema') {
+        modalsApi?.openConfigureFieldsModal?.(tab, async (schema) => {
+          const nextSchema = Array.isArray(schema) && schema.length ? schema : tab.schema;
+          tab.schema = nextSchema;
+          const savedTabs = await persistTabsConfig();
+          if (!savedTabs) return;
+          notifySectionUpdate();
+        });
+      } else if (action === 'rename') {
         modalsApi?.openRenameSectionModal?.(tab, async (newName) => {
           const cleaned = cleanSectionName(newName);
           if (!cleaned) return;
-          tab.label = cleaned;
+          tab.name = cleaned;
+          tab.label = tab.name;
+          const savedTabs = await persistTabsConfig();
+          if (!savedTabs) return;
           const persisted = await persistSectionOrder();
           if (!persisted) return;
           notifySectionUpdate();
         });
       } else if (action === 'color') {
-        const raw = await modalsApi?.openPromptModal?.(
-          'Section color (e.g. #ffcc00)',
-          tab.color || ''
-        );
-        const cleaned = sanitizePromptValue(raw);
-        if (!cleaned) return;
-        try {
-          const result = await safeInvoke(CHANNELS.UPDATE_SECTION, {
-            id: tab.id,
-            patch: { color: cleaned },
-          });
-          if (!result?.ok) {
-            global.alert?.(result?.error || 'Unable to change section color.');
-            return;
-          }
-          tab.color = cleaned;
-          notifySectionUpdate();
-        } catch (err) {
-          console.error('[SnipTabs] color update failed', err);
-        }
+        modalsApi?.openChangeClipColorModal?.(tab, {
+          section: true,
+          onSave: async (color) => {
+            tab.color = color || '';
+            const savedTabs = await persistTabsConfig();
+            if (!savedTabs) return;
+            notifySectionUpdate();
+          },
+        });
       } else if (action === 'icon') {
-        const raw = await modalsApi?.openPromptModal?.(
-          'Section icon (emoji or short code)',
-          tab.icon || ''
-        );
-        const cleaned = sanitizePromptValue(raw);
-        if (!cleaned) return;
-        try {
-          const result = await safeInvoke(CHANNELS.UPDATE_SECTION, {
-            id: tab.id,
-            patch: { icon: cleaned },
-          });
-          if (!result?.ok) {
-            global.alert?.(result?.error || 'Unable to change section icon.');
-            return;
-          }
-          tab.icon = cleaned;
-          notifySectionUpdate();
-        } catch (err) {
-          console.error('[SnipTabs] icon update failed', err);
-        }
+        modalsApi?.openChangeClipIconModal?.(tab, {
+          section: true,
+          onSave: async (icon) => {
+            tab.icon = icon || '';
+            const savedTabs = await persistTabsConfig();
+            if (!savedTabs) return;
+            notifySectionUpdate();
+          },
+        });
       } else if (action === 'folder') {
         try {
           const folderResult = await safeInvoke(CHANNELS.CHOOSE_EXPORT_FOLDER);
@@ -186,11 +220,18 @@
             return;
           }
           tab.locked = targetLocked;
+          renderTabs();
+          const persisted = await persistTabsConfig();
+          if (!persisted) return;
           notifySectionUpdate();
         } catch (err) {
           console.error('[SnipTabs] lock toggle failed', err);
         }
       } else if (action === 'delete') {
+        if (tab.locked) {
+          global.SnipToast?.show?.('Tab is locked: cannot delete section.');
+          return;
+        }
         const confirmed = await modalsApi?.openConfirmModal?.(
           `Delete section "${tab.label || tab.id}"?`
         );
@@ -245,6 +286,12 @@
       tabContextMenu.style.top = `${y}px`;
       tabContextMenu.classList.add('open');
       tabContextMenu.style.display = 'block';
+      const schemaItem = tabContextMenu.querySelector('[data-action="schema"]');
+      if (schemaItem) {
+        schemaItem.classList.remove('disabled');
+        schemaItem.style.display = '';
+        schemaItem.removeAttribute('aria-hidden');
+      }
     };
 
     const reorderTabs = async (sourceId, targetId) => {
@@ -334,13 +381,67 @@
         if ((isAll && getActiveTabId() === 'all') || (!isAll && tab && tab.id === getActiveTabId())) {
           el.classList.add('section-pill--active');
         }
-        el.textContent = isAll ? 'All' : tab.label || tab.name || tab.id || 'Tab';
+        const content = doc.createElement('span');
+        content.className = 'section-pill__content';
+        if (!isAll) {
+          const iconChoice =
+            modalsApi?.findIconChoice?.(tab?.icon) ||
+            tab?.icon ||
+            '';
+          let glyph = null;
+          if (typeof modalsApi?.createIconGlyph === 'function') {
+            glyph = modalsApi.createIconGlyph(iconChoice);
+          }
+          const iconWrapper = doc.createElement('span');
+          iconWrapper.className = 'section-pill__icon';
+          if (glyph) {
+            glyph.classList?.add('section-pill__icon-glyph');
+            iconWrapper.appendChild(glyph);
+          } else if (typeof iconChoice === 'string' && iconChoice) {
+            iconWrapper.textContent = iconChoice;
+          }
+          content.appendChild(iconWrapper);
+        }
+        const labelText = doc.createElement('span');
+        labelText.textContent = isAll ? 'All' : tab.label || tab.name || tab.id || 'Tab';
+        content.appendChild(labelText);
+
+        const lockedState = !isAll && tab ? Boolean(tab.locked) : false;
+        const lockEl = doc.createElement('span');
+        lockEl.className = 'section-pill__lock';
+        const lockIcon = lockedState ? '🔒' : '🔓';
+        lockEl.textContent = lockIcon;
+        lockEl.dataset.icon = lockIcon;
+        lockEl.setAttribute('aria-label', lockedState ? 'Locked section' : 'Unlocked section');
+        lockEl.dataset.locked = lockedState ? 'true' : 'false';
+        if (!isAll && tab) {
+          lockEl.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleTabLock(tab);
+          });
+        }
+        content.appendChild(lockEl);
+
+        if (lockedState) {
+          el.classList.add('section-pill--locked');
+        } else {
+          el.classList.remove('section-pill--locked');
+        }
+        if (!isAll && tab?.color) {
+          el.classList.add('section-pill--colored');
+          el.style.setProperty('background-color', tab.color);
+          el.style.setProperty('border-color', tab.color);
+        }
+
+        el.appendChild(content);
         el.dataset.sectionId = isAll ? 'all' : tab.id;
         el.draggable = !isAll;
         el.onclick = () => setActiveTab(el.dataset.sectionId);
         if (!isAll) {
           el.addEventListener('contextmenu', (event) => {
             event.preventDefault();
+            event.stopPropagation();
             showTabContextMenu(tab, event.clientX, event.clientY);
           });
         }

@@ -21,6 +21,10 @@
     const { validateText = (value) => (value || '').slice(0, 1000), validateUrl = (value) => value || '', DEFAULT_SCHEMA = [] } = helpers;
 
     const getCurrentClip = () => (app.clips || []).find((clip) => clip.id === app.currentClipId) || null;
+    const isSectionLocked = () => {
+      const renderer = getRendererApi();
+      return renderer?.isSectionLocked?.() || false;
+    };
     const getWrapper = (element) => (element && typeof element.closest === 'function' ? element.closest('div') : null);
 
     const applySchemaVisibility = (schema) => {
@@ -150,6 +154,10 @@
         showToast('No clip selected.');
         return;
       }
+      if (isSectionLocked()) {
+        showToast('Tab is locked: cannot delete clips.');
+        return;
+      }
       try {
         const deleteChannel = CHANNELS.DELETE_CLIP || 'delete-clip';
         await executor(deleteChannel, clip.id);
@@ -174,6 +182,30 @@
         event.preventDefault();
         deleteClip();
       };
+      if (textInput) {
+        textInput.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+        });
+        textInput.addEventListener('drop', (event) => {
+          event.preventDefault();
+          const dt = event.dataTransfer;
+          const clipId = dt?.getData('application/x-snipboard-clip-id') || '';
+          const clip = (app.clips || []).find((c) => c.id === clipId);
+          const titleLine = clip?.title || '(Untitled)';
+          const body = clip?.text || dt?.getData('text/plain') || '';
+          const payload = `---\n${titleLine}\n${body}\n---\n`;
+          const input = textInput;
+          const start = input.selectionStart ?? input.value.length;
+          const end = input.selectionEnd ?? input.value.length;
+          const before = input.value.slice(0, start);
+          const after = input.value.slice(end);
+          input.value = `${before}${payload}${after}`;
+          const cursor = start + payload.length;
+          input.selectionStart = input.selectionEnd = cursor;
+          input.focus();
+        });
+      }
     };
 
     return {
