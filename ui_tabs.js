@@ -309,6 +309,8 @@
             app.currentSectionId = 'all';
             callRefreshEditor();
           }
+          const savedTabs = await persistTabsConfig();
+          if (!savedTabs) return;
           callRefreshSections();
           callRefreshClipList();
           dispatchSectionsUpdated();

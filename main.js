@@ -131,6 +131,23 @@ function writeJson(file, data) {
   }
 }
 
+function normalizeSectionProtectionFlags(sections) {
+  const protectedIds = new Set(["all", "inbox"]);
+  let dirty = false;
+  const normalized = (Array.isArray(sections) ? sections : []).map((section) => {
+    if (!section || typeof section !== "object") return section;
+    const id = typeof section.id === "string" ? section.id.trim().toLowerCase() : "";
+    const name = typeof section.name === "string" ? section.name.trim().toLowerCase() : "";
+    const isProtected = protectedIds.has(id) || protectedIds.has(name);
+    if (section.protected !== isProtected) dirty = true;
+    return { ...section, protected: isProtected };
+  });
+  if (dirty) {
+    saveSections(normalized);
+  }
+  return normalized;
+}
+
 function loadData() {
   ensureDir(DATA_DIR);
   ensureDir(SCREENSHOTS_DIR);
@@ -157,8 +174,9 @@ function loadData() {
             : path.join(SECTION_DIR, s.id || "section"),
       }))
     : defaultSections;
+  const normalizedSections = normalizeSectionProtectionFlags(sections);
   const clips = readJson(CLIPS_FILE, []);
-  return { sections, clips };
+  return { sections: normalizedSections, clips };
 }
 
 function saveSections(sections) {
@@ -646,14 +664,21 @@ ipcMain.handle("update-section", async (_event, payload) => {
 
 ipcMain.handle("delete-section", async (_event, id) => {
   const { sections, clips } = loadData();
-  const protectedIds = new Set(["inbox", "common-prompts", "black-skies", "errors", "misc"]);
-  const target = sections.find((s) => s.id === id);
-  if (protectedIds.has(id) || (target && target.locked)) {
+  const sectionId =
+    typeof id === "string"
+      ? id.trim()
+      : typeof id === "object" && typeof id?.id === "string"
+      ? id.id.trim()
+      : "";
+  const normalized = sectionId.toLowerCase();
+  const protectedIds = new Set(["all", "inbox"]);
+  if (protectedIds.has(normalized)) {
     return { ok: false, error: "Cannot delete protected section." };
   }
 
-  const nextSections = sections.filter((s) => s.id !== id);
-  const nextClips = clips.filter((c) => c.sectionId !== id);
+  const targetId = sectionId || id;
+  const nextSections = sections.filter((s) => s.id !== targetId);
+  const nextClips = clips.filter((c) => c.sectionId !== targetId);
 
   saveSections(nextSections);
   saveClips(nextClips);
