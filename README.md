@@ -1,108 +1,138 @@
-# \# SnipBoard
+# project1
 
-# 
+> **Name change note**  
+> This repository is named **project1** to avoid naming collisions.  
+> The application itself may still display the name “SnipBoard” internally.
 
-# SnipBoard is a \*\*local-first Electron desktop app\*\* paired with a \*\*Chrome extension\*\* that lets you capture, organize, and store snippets from ChatGPT and other web content.
+---
 
-# 
+## Overview
 
-# It is designed for \*\*personal use\*\*, runs entirely on your machine, and does \*\*not\*\* upload data to any cloud service.
+**project1** is a local-first Windows desktop application with a companion Chrome extension.
 
-# 
+It allows you to capture selected ChatGPT messages (or other web content), send them to a desktop app, and organize them into tabs with notes, tags, and screenshots.
 
-# ---
+Everything runs locally on your machine.
 
-# 
+- No accounts
+- No cloud services
+- No telemetry
+- No external servers
 
-# \## What it does
+---
 
-# 
+## Intended use
 
-# \- Select one or more ChatGPT messages directly in the browser
+This project is for **personal use**.
 
-# \- Send selected content to a local SnipBoard app
+You are not required to publish, distribute, or release it publicly in order to use it.  
+The Windows installer exists so the app can be used normally outside of development mode.
 
-# \- Organize clips by tabs (sections), tags, and notes
+---
 
-# \- Capture and store screenshots alongside text
+## System requirements (end users)
 
-# \- Search and filter across stored clips
+### Required
+- Windows 10 or Windows 11
+- Google Chrome
 
-# 
+### Not required
+You do **not** need:
+- Node.js
+- npm
+- Git
+- Developer tools
 
-# All data is stored locally.
+Those are only needed if you plan to modify the code.
 
-# 
+---
 
-# ---
+## Using the application (EXE)
 
-# 
+### Step 1 — Obtain the installer
+Use a locally built installer or download it from GitHub Releases (if you created one).
 
-# \## Features
+The file name will look like: project1-<version>-x64.exe
 
-# 
+### Step 2 — Install
+1. Double-click the `.exe`
+2. Accept the default options
+3. Complete the installation
 
-# \- Electron desktop app (Windows)
+This creates:
+- A desktop shortcut
+- A Start Menu entry
 
-# \- Chrome extension (Manifest v3)
+### Step 3 — First launch
+Launch the app using the desktop shortcut.
 
-# \- Multi-message selection in ChatGPT
+On first run you should see:
+- An **Inbox** tab
+- An **All** tab
+- No errors
 
-# \- Inbox + custom tabs (sections)
+All data is stored locally.
 
-# \- Tags, notes, and search
+## Chrome extension setup
+Step 1 — Open Chrome extensions
+1. Open Chrome
+2. Go to: chrome://extensions
+3. Enable **Developer mode** (top-right)
 
-# \- Screenshot capture with thumbnails
+Step 2 — Load the extension
+1. Click **Load unpacked**
+2. Select the folder:
+SnipBoardExtension/
+3. Confirm the extension is enabled
 
-# \- Local HTTP bridge (`http://127.0.0.1:4050`)
+Step 3 — Using the extension
+1. Open ChatGPT in Chrome
+2. Click the extension icon
+3. Click one or more chat messages
+4. Selected messages will highlight
+5. Confirm to send them to the desktop app
+New clips appear in the **Inbox** tab.
 
-# \- Persistent storage via Electron `userData`
+## Local data storage
+All data is stored locally using Electron’s user data directory.
+Typical location:
+C:\Users<YourName>\AppData\Roaming\snipboard\SnipBoard\
+This includes:
+- Clips
+- Tabs
+- Notes
+- Screenshots
+Uninstalling the app does not automatically delete this data.
+## Development mode (optional)
+Only required if you want to modify the application.
 
-# 
+## Requirements
+- Node.js 18+
+- npm
 
-# ---
+### Run in development mode
+```bash
+npm install
+npm start
 
-# 
+Building the Windows installer (developers)
+npm run build
 
-# \## Architecture
 
-# 
+The installer will be generated in: 
+dist/
 
-# \- \*\*Desktop app:\*\* Electron + Node.js
 
-# \- \*\*Extension:\*\* Content script + popup UI
+Build artifacts should not be committed to Git.
 
-# \- \*\*Communication:\*\* Local HTTP POST (`/add-clip`)
+Scope and limitations
 
-# \- \*\*Storage:\*\* Local JSON + screenshots directory
+Windows only
 
-# \- \*\*No cloud, no accounts, no telemetry\*\*
+Local machine only
 
-# 
+No cloud sync
 
-# ---
+No multi-device support
 
-# 
-
-# \## Getting started (development)
-
-# 
-
-# \### Prerequisites
-
-# \- Node.js (18+ recommended)
-
-# \- npm
-
-# 
-
-# \### Install \& run
-
-# ```bash
-
-# npm install
-
-# npm start
-
-# 
 
