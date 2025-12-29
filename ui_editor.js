@@ -12,6 +12,7 @@
       capturedAtInput,
       sourceUrlInput,
       sourceTitleInput,
+      openSourceBtn,
       saveClipBtn,
       deleteClipBtn,
     } = dom;
@@ -26,6 +27,40 @@
       return renderer?.isSectionLocked?.() || false;
     };
     const getWrapper = (element) => (element && typeof element.closest === 'function' ? element.closest('div') : null);
+
+    const removeSourceUrlField = () => {
+      if (!sourceUrlInput) return;
+      const group = sourceUrlInput.closest && sourceUrlInput.closest('.source-url-group');
+      const label = group ? group.querySelector('label') : null;
+      if (label) label.remove();
+      if (sourceUrlInput.remove) {
+        sourceUrlInput.remove();
+      } else if (sourceUrlInput.parentElement) {
+        sourceUrlInput.parentElement.removeChild(sourceUrlInput);
+      }
+    };
+
+    let currentClipSourceUrl = '';
+    let openVisible = false;
+    const hasValidSourceUrl = () => Boolean(validateUrl(currentClipSourceUrl || ''));
+    const openWrapper = openSourceBtn
+      ? (openSourceBtn.closest && openSourceBtn.closest('.source-url-group')) || openSourceBtn.parentElement
+      : null;
+    const setOpenButtonVisibility = (show) => {
+      openVisible = Boolean(show);
+      if (openWrapper) openWrapper.style.display = show ? '' : 'none';
+      if (openSourceBtn) openSourceBtn.style.display = show ? '' : 'none';
+      if (openSourceBtn) openSourceBtn.disabled = !show || !hasValidSourceUrl();
+    };
+    const syncCurrentSourceUrl = (value) => {
+      currentClipSourceUrl = value || '';
+      if (openSourceBtn && openVisible) {
+        openSourceBtn.disabled = !hasValidSourceUrl();
+      }
+    };
+    const getStoredSourceUrl = () => getCurrentClip()?.sourceUrl || '';
+
+    removeSourceUrlField();
 
     const applySchemaVisibility = (schema) => {
       const normalized = Array.isArray(schema) && schema.length ? schema : DEFAULT_SCHEMA;
@@ -42,16 +77,13 @@
       toggle(getWrapper(notesInput), 'notes');
       toggle(getWrapper(tagsInput), 'tags');
       toggle(getWrapper(capturedAtInput), 'capturedAt');
-      const sourceUrlWrapper =
-        (sourceUrlInput && sourceUrlInput.closest && sourceUrlInput.closest('.source-url')) ||
-        (sourceUrlInput && sourceUrlInput.closest && sourceUrlInput.closest('.field-row')) ||
-        (sourceUrlInput ? sourceUrlInput.parentElement : null);
       const sourceTitleWrapper =
-        (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest('.source-title')) ||
-        (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest('.field-row')) ||
+        (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest('.source-title-group')) ||
         (sourceTitleInput ? sourceTitleInput.parentElement : null);
-      toggle(sourceUrlWrapper, 'sourceUrl');
+      const shouldShowTitle = matches('sourceTitle');
       toggle(sourceTitleWrapper, 'sourceTitle');
+      const shouldShowOpen = matches('open');
+      setOpenButtonVisibility(shouldShowOpen);
     };
 
     const normalizeTags = (input) => {
@@ -88,7 +120,7 @@
         notes: validateText(notesInput && notesInput.value ? notesInput.value : ''),
         tags: normalizeTags(rawTags),
         capturedAt: capturedAtInput && capturedAtInput.value ? capturedAtInput.value : '',
-        sourceUrl: validateUrl(sourceUrlInput && sourceUrlInput.value ? sourceUrlInput.value : ''),
+        sourceUrl: getStoredSourceUrl(),
         sourceTitle: validateText(sourceTitleInput && sourceTitleInput.value ? sourceTitleInput.value : ''),
       };
     };
@@ -99,6 +131,7 @@
         [titleInput, textInput, notesInput, tagsInput, capturedAtInput, sourceUrlInput, sourceTitleInput].forEach((el) => {
           if (el) el.value = '';
         });
+        syncCurrentSourceUrl('');
         return;
       }
       if (titleInput) titleInput.value = target.title || '';
@@ -109,7 +142,7 @@
         tagsInput.value = normalizedTags.join(', ');
       }
       if (capturedAtInput) capturedAtInput.value = target.capturedAt ? new Date(target.capturedAt).toISOString().slice(0, 16) : '';
-      if (sourceUrlInput) sourceUrlInput.value = target.sourceUrl || '';
+      syncCurrentSourceUrl(target.sourceUrl || '');
       if (sourceTitleInput) sourceTitleInput.value = target.sourceTitle || '';
       applySchemaVisibility(target.schema || []);
     };
@@ -136,10 +169,6 @@
         return;
       }
       const values = getEditorFieldValues();
-      if (values.sourceUrl && !values.sourceUrl.startsWith('http')) {
-        showToast('Invalid URL.');
-        return;
-      }
       const tagsArray = normalizeTags(values.tags);
       values.tags = tagsArray;
       clip.title = String(values.title || '');
@@ -199,14 +228,22 @@
         const btn = event.target?.closest?.('[data-action="open-source-url"]');
         if (!btn) return;
         event.preventDefault();
-        if (!sourceUrlInput) return;
-        const url = validateUrl(sourceUrlInput.value || '');
-        if (!url) return;
+        event.stopPropagation();
+        if (global.__snipboardOpenInFlight) return;
+        global.__snipboardOpenInFlight = true;
+        const url = validateUrl(getStoredSourceUrl());
+        if (!url) {
+          global.__snipboardOpenInFlight = false;
+          return;
+        }
         if (global.api?.openUrl) {
           global.api.openUrl(url);
         } else if (executor) {
           executor(CHANNELS.OPEN_URL || 'open-url', url);
         }
+        setTimeout(() => {
+          global.__snipboardOpenInFlight = false;
+        }, 300);
       });
       if (textInput) {
         textInput.addEventListener('dragover', (event) => {

@@ -13,6 +13,30 @@ body {
   color: #1b2a3a;
 }
 
+body:has(#packaged-title-bar) {
+  padding-top: 24px !important;
+}
+
+body:has(#packaged-title-bar) #app {
+  height: calc(100vh - 24px);
+}
+
+body:has(#packaged-title-bar) #packaged-title-bar {
+  -webkit-app-region: drag;
+}
+
+body:has(#packaged-title-bar) #packaged-controls,
+body:has(#packaged-title-bar) #packaged-controls *,
+body:has(#packaged-title-bar) .toolbar,
+body:has(#packaged-title-bar) .section-tabs,
+body:has(#packaged-title-bar) button,
+body:has(#packaged-title-bar) input,
+body:has(#packaged-title-bar) textarea,
+body:has(#packaged-title-bar) select,
+body:has(#packaged-title-bar) [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
 #app {
   display: flex;
   flex-direction: column;
@@ -118,7 +142,7 @@ body {
 
 .section-tabs {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
@@ -133,9 +157,9 @@ body {
 
 .section-pill,
 .add-tab {
-  border-radius: 999px;
-  padding: 6px 14px;
-  margin-right: 8px;
+  border-radius: 4px;
+  padding: 4px 10px;
+  margin-right: 4px;
   border: 1px solid #d0d7e2;
   background: #f5f7fb;
   font-size: 13px;
@@ -186,6 +210,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.section-pill__icon:empty {
+  display: none;
 }
 
 .section-pill__icon svg {
@@ -670,8 +698,8 @@ textarea.tall {
 }
 
 .source-input {
-  display: grid;
-  grid-template-columns: 1fr 78px;
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
@@ -704,6 +732,7 @@ textarea.tall {
 .source-url-group button {
   margin-left: 6px;
   white-space: nowrap;
+  min-width: 78px;
 }
 
 /* ------------------------------------------------------------

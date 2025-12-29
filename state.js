@@ -99,7 +99,7 @@
     searchIndex: new Map(),
   };
 
-  const DEFAULT_SCHEMA = ["title", "text", "screenshots", "tags", "sourceUrl", "sourceTitle", "capturedAt", "notes"];
+  const DEFAULT_SCHEMA = ["title", "text", "screenshots", "tags", "sourceTitle", "open", "capturedAt", "notes"];
   const FIELD_OPTIONS = DEFAULT_SCHEMA.slice();
   const TAB_COLORS = [
     "#FF4F4F", // red
@@ -135,6 +135,7 @@
   };
 
   const iconChoices = [
+    { id: "", label: "None" },
     { id: "inbox", label: "Inbox", emoji: "\u{1F4E5}" },
     { id: "folder", label: "Folder", emoji: "\u{1F4C1}" },
     { id: "test", label: "Flask", svg: '<svg viewBox="0 0 24 24" fill="#2FAACE" xmlns="http://www.w3.org/2000/svg"><path d="M9 3h6v2h-1v3.6l3.7 5.9c.6 1-.1 2.3-1.3 2.3H7.6c-1.2 0-1.9-1.3-1.3-2.3L10 8.6V5H9V3Zm4 7.3 2.3 3.7H8.7L11 10.3V5h2v5.3Z"/></svg>' },
@@ -345,8 +346,13 @@
       });
     }
       const sanitizeSchema = (schema) => {
+        // TODO: Keep schema normalization in sync with renderer.js (normalizeTabSchemas).
         if (!Array.isArray(schema) || !schema.length) return DEFAULT_SCHEMA.slice();
         const filtered = schema.filter((f) => FIELD_OPTIONS.includes(f));
+        const hasLegacySourceUrl = schema.some((f) => typeof f === "string" && f.toLowerCase() === "sourceurl");
+        if (hasLegacySourceUrl && !filtered.includes("open")) {
+          filtered.push("open");
+        }
         return filtered.length ? filtered : DEFAULT_SCHEMA.slice();
       };
       const normalizeClipOrder = (order) => {

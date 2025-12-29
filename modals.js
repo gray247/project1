@@ -216,7 +216,8 @@
         const glyph = document.createElement("span");
         glyph.className = "icon-choice__glyph";
         if (choice.svg) glyph.innerHTML = choice.svg;
-        else glyph.textContent = choice.emoji || choice.icon || "";
+        else if (choice.emoji || choice.icon) glyph.textContent = choice.emoji || choice.icon || "";
+        else glyph.textContent = choice.label || "";
         item.appendChild(glyph);
         item.setAttribute("aria-label", choice.label || choice.id || "icon");
         item.onclick = () => {
@@ -468,22 +469,26 @@
     }
 
     function createIconGlyph(choice) {
-      const glyph = document.createElement("span");
-      glyph.className = "icon-choice__glyph";
-      if (!choice) {
-        glyph.textContent = "⭐";
+      if (!choice) return null;
+      if (typeof choice === "string") {
+        const trimmed = choice.trim();
+        if (!trimmed) return null;
+        const glyph = document.createElement("span");
+        glyph.className = "icon-choice__glyph";
+        glyph.textContent = trimmed;
         return glyph;
       }
-      if (typeof choice === "string") {
-        glyph.textContent = choice;
-      } else if (choice.emoji) {
+      if (choice.id === "") return null;
+      const glyph = document.createElement("span");
+      glyph.className = "icon-choice__glyph";
+      if (choice.emoji) {
         glyph.textContent = choice.emoji;
       } else if (choice.icon) {
         glyph.textContent = choice.icon;
       } else if (choice.svg) {
         glyph.innerHTML = choice.svg;
       } else {
-        glyph.textContent = iconGlyphMap[choice.id] || "⭐";
+        glyph.textContent = iconGlyphMap[choice.id] || "";
       }
       return glyph;
     }
@@ -624,7 +629,7 @@
         input.value = field;
         input.checked = activeSchema.includes(field);
         const span = document.createElement("span");
-        span.textContent = field;
+        span.textContent = field === "open" ? "Open" : field;
         row.appendChild(input);
         row.appendChild(span);
         configureFieldsList.appendChild(row);

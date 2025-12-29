@@ -57,10 +57,11 @@
 
     const createClipIconElement = (clip) => {
       if (!doc) return null;
-      const choice = modalsApi?.findIconChoice?.(clip?.icon || "") || null;
-      const glyph =
-        modalsApi?.createIconGlyph?.(choice || clip?.icon || "") ||
-        doc.createElement("span");
+      const rawIcon = typeof clip?.icon === "string" ? clip.icon.trim() : "";
+      const choice = modalsApi?.findIconChoice?.(rawIcon) || null;
+      if (!choice && !rawIcon) return null;
+      const glyph = modalsApi?.createIconGlyph?.(choice || rawIcon);
+      if (!glyph) return null;
       if (!glyph.classList?.contains("icon-choice__glyph")) {
         glyph.classList?.add("icon-choice__glyph");
       }

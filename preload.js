@@ -37,6 +37,12 @@ contextBridge.exposeInMainWorld("api", {
   openUrl: (url) => ipcRenderer.invoke("open-url", url),
 });
 
+contextBridge.exposeInMainWorld("windowControls", {
+  minimize: () => ipcRenderer.invoke("window:minimize"),
+  close: () => ipcRenderer.invoke("window:close"),
+  toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
+});
+
 contextBridge.exposeInMainWorld("ui", {
   openColorPicker,
 });

@@ -8,6 +8,7 @@
     updateSearchIndex,
     sectionLabel,
     FIELD_OPTIONS,
+    validateUrl,
   } = window.SnipState || {};
 
   const {
@@ -24,6 +25,17 @@
   const invoke = rawInvoke || (async () => {});
   const safeChannel = safeInvoke || invoke;
   const SCREENSHOT_BASE_URL = "http://127.0.0.1:4050/screenshots";
+  const safeValidateUrl = typeof validateUrl === "function"
+    ? validateUrl
+    : (value) => {
+        if (!value) return "";
+        try {
+          const url = new URL(value);
+          return (url.protocol === "http:" || url.protocol === "https:") ? value : "";
+        } catch {
+          return "";
+        }
+      };
 
   const labelForSection = typeof sectionLabel === "function" ? sectionLabel : (id) => id || "Section";
   const state = AppState || {
@@ -70,12 +82,44 @@ window.__SNIPBOARD_STATE__ = state;
           return match || lower;
         })
         .filter(Boolean);
+      const hasLegacySourceUrl = rawSchema.some((f) => typeof f === 'string' && f.toLowerCase() === 'sourceurl');
+      if (hasLegacySourceUrl && !normalized.includes('open')) {
+        normalized.push('open');
+      }
       const schema = normalized.length ? normalized : options.slice();
       return { ...tab, schema };
     });
   };
 
   const getCurrentClip = () => resolveClipForSection(getActiveSectionId());
+  let manualClipSelection = false;
+
+  const hasSchemaField = (schema, field) => {
+    if (!Array.isArray(schema)) return false;
+    const target = String(field || "").toLowerCase();
+    return schema.some((item) => String(item || "").toLowerCase() === target);
+  };
+
+  const applyOpenVisibility = (schema, clip) => {
+    if (!openSourceBtn && !sourceTitleInput) return;
+    const showOpen = hasSchemaField(schema, "open");
+    const showSourceTitle = hasSchemaField(schema, "sourceTitle");
+    const openWrapper = openSourceBtn
+      ? (openSourceBtn.closest && openSourceBtn.closest(".source-url-group")) || openSourceBtn.parentElement
+      : null;
+    if (openWrapper) openWrapper.style.display = showOpen ? "" : "none";
+    if (openSourceBtn) {
+      openSourceBtn.style.display = showOpen ? "" : "none";
+      const validUrl = safeValidateUrl(clip?.sourceUrl || "");
+      openSourceBtn.disabled = !showOpen || !validUrl;
+    }
+    const sourceRow =
+      (openSourceBtn && openSourceBtn.closest && openSourceBtn.closest(".source-meta-row")) ||
+      (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest(".source-meta-row"));
+    if (sourceRow) {
+      sourceRow.style.display = (showOpen || showSourceTitle) ? "" : "none";
+    }
+  };
 
   function normalizeTags(raw) {
     if (Array.isArray(raw)) {
@@ -224,6 +268,8 @@ window.__SNIPBOARD_STATE__ = state;
       locked: Boolean(tab.locked),
       color: tab.color || '',
       icon: tab.icon || '',
+      exportPath: tab.exportPath || tab.exportFolder || '',
+      exportFolder: tab.exportFolder || tab.exportPath || '',
     }));
   };
 
@@ -746,6 +792,7 @@ window.__SNIPBOARD_STATE__ = state;
     if (!clip) {
       state.currentClipId = null;
       editorApi?.loadClipIntoEditor?.(null);
+      applyOpenVisibility([], null);
       if (screenshotBox) screenshotBox.innerHTML = '';
       updateEditorControls();
       return;
@@ -763,11 +810,18 @@ window.__SNIPBOARD_STATE__ = state;
       (Array.isArray(clip?.schema) && clip.schema.length ? clip.schema : null) ||
       DEFAULT_SCHEMA;
     editorApi?.applySchemaVisibility?.(schema);
+    applyOpenVisibility(schema, clip);
     const allowScreenshots = Array.isArray(schema) ? schema.includes('screenshots') : true;
     if (!allowScreenshots) {
       if (screenshotBox) {
         const row = screenshotBox.closest('.field-row');
         if (row) row.style.display = 'none';
+        screenshotBox.innerHTML = '';
+      }
+    } else if (!manualClipSelection) {
+      if (screenshotBox) {
+        const row = screenshotBox.closest('.field-row');
+        if (row) row.style.display = '';
         screenshotBox.innerHTML = '';
       }
     } else {
@@ -899,8 +953,37 @@ window.__SNIPBOARD_STATE__ = state;
   }
   const sourceUrlInput = document.getElementById('sourceUrlInput');
   const sourceTitleInput = document.getElementById('sourceTitleInput');
+  const openSourceBtn = document.getElementById('openSourceBtn');
   const screenshotBox = document.getElementById('screenshotContainer');
   if (screenshotBox) screenshotBox.classList.add('screenshots-container');
+
+  const bindOpenClickGuard = () => {
+    if (window.__snipOpenGuardBound) return;
+    window.__snipOpenGuardBound = true;
+    document.addEventListener('click', (event) => {
+      const btn = event.target?.closest?.('[data-action="open-source-url"]');
+      if (!btn) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (window.__snipOpenInFlight) return;
+      window.__snipOpenInFlight = true;
+      const clip = getCurrentClip();
+      const url = safeValidateUrl(clip?.sourceUrl || "");
+      if (!url) {
+        window.__snipOpenInFlight = false;
+        return;
+      }
+      if (typeof api.openUrl === "function") {
+        api.openUrl(url);
+      } else {
+        safeChannel?.(CHANNELS.OPEN_URL || "open-url", url);
+      }
+      setTimeout(() => {
+        window.__snipOpenInFlight = false;
+      }, 300);
+    }, true);
+  };
+  bindOpenClickGuard();
 
   const saveClipBtn = document.getElementById('saveClipBtn');
   const deleteClipBtn = document.getElementById('deleteClipBtn');
@@ -1019,6 +1102,7 @@ window.__SNIPBOARD_STATE__ = state;
           capturedAtInput,
           sourceUrlInput,
           sourceTitleInput,
+          openSourceBtn,
           screenshotBox,
         },
         helpers: {
@@ -1036,15 +1120,18 @@ window.__SNIPBOARD_STATE__ = state;
   tabsApi?.onTabChange?.((tab) => {
     screenshotUrlCache.clear();
     missingScreenshotSet.clear();
+    manualClipSelection = false;
     state.activeTabId = tab?.id || 'all';
     state.currentSectionId = state.activeTabId;
     refreshSections();
     refreshClipList();
     refreshClipThumbnails();
+    if (screenshotBox) screenshotBox.innerHTML = '';
     void refreshEditor();
   });
 
   clipsApi?.onClipSelected?.((clip) => {
+    manualClipSelection = true;
     state.currentClipId = clip?.id || null;
     void refreshEditor();
   });

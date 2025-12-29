@@ -21,6 +21,155 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg"
 const TOKEN_HEADER_NAME = "x-snipboard-token";
 const missingServedScreenshots = new Set();
 
+const PACKAGED_CSS = `
+  #packaged-title-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.0);
+    -webkit-app-region: drag;
+    z-index: 998;
+    pointer-events: auto;
+  }
+  #packaged-controls {
+    position: fixed;
+    top: 0;
+    right: 6px;
+    display: flex;
+    gap: 6px;
+    height: 24px;
+    align-items: center;
+    z-index: 999;
+  }
+  #packaged-controls,
+  #packaged-controls * {
+    pointer-events: auto;
+  }
+  .packaged-control-btn {
+    width: 36px;
+    height: 24px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(255, 255, 255, 0.18);
+    color: #0f172a;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+  .packaged-control-btn:hover {
+    background: rgba(255, 255, 255, 0.26);
+  }
+  .packaged-control-btn:active {
+    background: rgba(255, 255, 255, 0.38);
+  }
+  body {
+    padding-top: 24px;
+  }
+  #app {
+    height: calc(100vh - 24px);
+  }
+`;
+
+const PACKAGED_HTML = `
+  <div id="packaged-title-bar"></div>
+  <div id="packaged-controls">
+    <button class="packaged-control-btn" data-action="window:minimize" aria-label="Minimize">‐</button>
+    <button class="packaged-control-btn" data-action="window:toggle-maximize" aria-label="Toggle Maximize">□</button>
+    <button class="packaged-control-btn" data-action="window:close" aria-label="Close">×</button>
+  </div>
+`;
+
+const PACKAGED_SCRIPT = `
+  (() => {
+    if (document.getElementById("packaged-controls")) return;
+    const fragment = document
+      .createRange()
+      .createContextualFragment(\`${PACKAGED_HTML}\`);
+    document.body.appendChild(fragment);
+    const actionMap = {
+      "window:minimize": "minimize",
+      "window:toggle-maximize": "toggleMaximize",
+      "window:close": "close",
+    };
+    const controls = document.getElementById("packaged-controls");
+    if (!controls) return;
+    controls.addEventListener("click", (event) => {
+      const target = event.target;
+      const actionKey = target?.dataset?.action;
+      const method = actionMap[actionKey];
+      if (!method) return;
+      const api = window.windowControls || {};
+      const fn = api[method];
+      if (typeof fn === "function") fn();
+      if (actionKey === "window:close") {
+        try {
+          console.log("PACKAGED_CONTROL_CLOSE_CLICKED");
+        } catch {}
+      }
+    });
+
+    const getBasePadding = () => {
+      const body = document.body;
+      if (!body) return 0;
+      if (!body.dataset.packagedPad) {
+        const computed = window.getComputedStyle(body).paddingTop;
+        const value = parseFloat(computed) || 0;
+        body.dataset.packagedPad = String(value);
+      }
+      return parseFloat(body.dataset.packagedPad) || 0;
+    };
+
+    const applyPadding = (value) => {
+      const body = document.body;
+      if (!body) return;
+      body.style.paddingTop = value + "px";
+      const appRoot = document.getElementById("app");
+      if (appRoot) {
+        appRoot.style.height = "calc(100vh - " + value + "px)";
+      }
+    };
+
+    const warnOverlapOnce = (details) => {
+      const body = document.body;
+      if (!body || body.dataset.packagedOverlapWarned) return;
+      body.dataset.packagedOverlapWarned = "true";
+      try {
+        console.warn("[SnipBoard] Drag bar overlap detected", details);
+      } catch {}
+    };
+
+    const checkOverlap = () => {
+      const titleBar = document.getElementById("packaged-title-bar");
+      const tabs = document.getElementById("sectionTabs") || document.querySelector(".section-tabs");
+      if (!titleBar || !tabs) return;
+      const barRect = titleBar.getBoundingClientRect();
+      const tabsRect = tabs.getBoundingClientRect();
+      const overlap = barRect.bottom - tabsRect.top;
+      if (overlap > 0.5) {
+        const basePad = getBasePadding();
+        const nextPad = basePad + overlap;
+        warnOverlapOnce({ barBottom: barRect.bottom, tabsTop: tabsRect.top, delta: overlap });
+        const current = parseFloat(document.body?.style?.paddingTop || "") || 0;
+        if (Math.abs(nextPad - current) > 0.5) {
+          applyPadding(nextPad);
+        }
+      }
+    };
+
+    const scheduleOverlapCheck = () => {
+      if (typeof window === "undefined") return;
+      window.requestAnimationFrame(() => {
+        setTimeout(checkOverlap, 0);
+      });
+    };
+
+    scheduleOverlapCheck();
+    window.addEventListener("resize", scheduleOverlapCheck);
+  })();
+`;
+
 function migrateLegacyBaseDir() {
   try {
     const legacyExists = fs.existsSync(LEGACY_BASE_DATA_DIR);
@@ -531,9 +680,28 @@ function stopHttpBridge() {
 }
 
 function createWindow() {
+  const isPackaged = app.isPackaged;
+  if (isPackaged) {
+    console.log("PACKAGED CHECK", {
+      marker: "PACKAGED_MARKER_2025_12_28",
+      isPackaged,
+      file: __filename,
+      cwd: process.cwd(),
+      appPath: app.getAppPath(),
+    });
+  }
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    ...(isPackaged
+      ? {
+          frame: false,
+          titleBarStyle: "hidden",
+          title: "",
+        }
+      : {
+          title: "",
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
@@ -543,9 +711,42 @@ function createWindow() {
     },
   });
 
+  if (isPackaged) {
+    win.setTitle("");
+    win.webContents.once("did-finish-load", () => {
+      win.webContents.insertCSS(PACKAGED_CSS).catch(() => {});
+      win.webContents.executeJavaScript(PACKAGED_SCRIPT, true).catch(() => {});
+    });
+  }
+
   win.loadFile("index.html");
   return win;
 }
+
+ipcMain.handle("window:minimize", () => {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused) return { ok: false };
+  focused.minimize();
+  return { ok: true };
+});
+
+ipcMain.handle("window:close", () => {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused) return { ok: false };
+  focused.close();
+  return { ok: true };
+});
+
+ipcMain.handle("window:toggle-maximize", () => {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused) return { ok: false };
+  if (focused.isMaximized()) {
+    focused.unmaximize();
+  } else {
+    focused.maximize();
+  }
+  return { ok: true, maximized: focused.isMaximized() };
+});
 
 app.whenReady().then(() => {
   ensureDir(DATA_DIR);
