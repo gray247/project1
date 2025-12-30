@@ -5,9 +5,11 @@
     AppState,
     DEFAULT_SCHEMA,
     normalizeClip,
+    normalizeExportPath,
+    TAB_COLORS,
+    normalizeTabs,
     updateSearchIndex,
     sectionLabel,
-    FIELD_OPTIONS,
     validateUrl,
   } = window.SnipState || {};
 
@@ -25,18 +27,6 @@
   const invoke = rawInvoke || (async () => {});
   const safeChannel = safeInvoke || invoke;
   const SCREENSHOT_BASE_URL = "http://127.0.0.1:4050/screenshots";
-  const safeValidateUrl = typeof validateUrl === "function"
-    ? validateUrl
-    : (value) => {
-        if (!value) return "";
-        try {
-          const url = new URL(value);
-          return (url.protocol === "http:" || url.protocol === "https:") ? value : "";
-        } catch {
-          return "";
-        }
-      };
-
   const labelForSection = typeof sectionLabel === "function" ? sectionLabel : (id) => id || "Section";
   const state = AppState || {
     tabs: [],
@@ -52,6 +42,37 @@ window.__SNIPBOARD_STATE__ = state;
 
   let refreshFullQueue = Promise.resolve();
 
+  const applySectionExportPaths = (tabs, sections) => {
+    if (!Array.isArray(tabs) || !tabs.length) return tabs;
+    if (!Array.isArray(sections) || !sections.length) return tabs;
+    const normalizeExport =
+      typeof normalizeExportPath === 'function'
+        ? normalizeExportPath
+        : (value) => (typeof value === 'string' ? value.trim() : '');
+    const sectionMap = new Map(
+      sections
+        .filter((section) => section && section.id)
+        .map((section) => [section.id, section])
+    );
+    return tabs.map((tab) => {
+      if (!tab || !tab.id) return tab;
+      const section = sectionMap.get(tab.id);
+      if (!section) return tab;
+      const exportPath =
+        typeof section.exportPath === 'string' ? section.exportPath : '';
+      const exportFolder =
+        typeof section.exportFolder === 'string' ? section.exportFolder : '';
+      const exportLabel = section.name || section.id || tab.label || tab.name || tab.id || 'Tab';
+      const normalizedPath = normalizeExport(exportPath || exportFolder, exportLabel);
+      const normalizedFolder = normalizeExport(exportFolder || exportPath, exportLabel);
+      return {
+        ...tab,
+        exportPath: normalizedPath,
+        exportFolder: normalizedFolder,
+      };
+    });
+  };
+
   const resolveClipForSection = (sectionId) => {
     const clips = state.clips || [];
     const targetSection = sectionId || getActiveSectionId();
@@ -65,32 +86,6 @@ window.__SNIPBOARD_STATE__ = state;
     return clips.find((clip) => clip.sectionId === targetSection) || null;
   };
 
-  const normalizeTabSchemas = (tabs = []) => {
-    const options = Array.isArray(FIELD_OPTIONS) && FIELD_OPTIONS.length
-      ? FIELD_OPTIONS
-      : Array.isArray(DEFAULT_SCHEMA) ? DEFAULT_SCHEMA : [];
-    const allowedLower = new Set(options.map((f) => (typeof f === 'string' ? f.toLowerCase() : f)));
-    return (Array.isArray(tabs) ? tabs : []).map((tab) => {
-      const rawSchema = Array.isArray(tab?.schema) ? tab.schema : [];
-      const normalized = rawSchema
-        .map((f) => (typeof f === 'string' ? f.trim() : ''))
-        .filter(Boolean)
-        .map((f) => {
-          const lower = f.toLowerCase();
-          if (!allowedLower.has(lower)) return null;
-          const match = options.find((opt) => typeof opt === 'string' && opt.toLowerCase() === lower);
-          return match || lower;
-        })
-        .filter(Boolean);
-      const hasLegacySourceUrl = rawSchema.some((f) => typeof f === 'string' && f.toLowerCase() === 'sourceurl');
-      if (hasLegacySourceUrl && !normalized.includes('open')) {
-        normalized.push('open');
-      }
-      const schema = normalized.length ? normalized : options.slice();
-      return { ...tab, schema };
-    });
-  };
-
   const getCurrentClip = () => resolveClipForSection(getActiveSectionId());
   let manualClipSelection = false;
 
@@ -98,27 +93,6 @@ window.__SNIPBOARD_STATE__ = state;
     if (!Array.isArray(schema)) return false;
     const target = String(field || "").toLowerCase();
     return schema.some((item) => String(item || "").toLowerCase() === target);
-  };
-
-  const applyOpenVisibility = (schema, clip) => {
-    if (!openSourceBtn && !sourceTitleInput) return;
-    const showOpen = hasSchemaField(schema, "open");
-    const showSourceTitle = hasSchemaField(schema, "sourceTitle");
-    const openWrapper = openSourceBtn
-      ? (openSourceBtn.closest && openSourceBtn.closest(".source-url-group")) || openSourceBtn.parentElement
-      : null;
-    if (openWrapper) openWrapper.style.display = showOpen ? "" : "none";
-    if (openSourceBtn) {
-      openSourceBtn.style.display = showOpen ? "" : "none";
-      const validUrl = safeValidateUrl(clip?.sourceUrl || "");
-      openSourceBtn.disabled = !showOpen || !validUrl;
-    }
-    const sourceRow =
-      (openSourceBtn && openSourceBtn.closest && openSourceBtn.closest(".source-meta-row")) ||
-      (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest(".source-meta-row"));
-    if (sourceRow) {
-      sourceRow.style.display = (showOpen || showSourceTitle) ? "" : "none";
-    }
   };
 
   function normalizeTags(raw) {
@@ -236,6 +210,33 @@ window.__SNIPBOARD_STATE__ = state;
 
   const missingScreenshotSet = new Set();
   const screenshotUrlCache = new Map();
+  const canRevokeObjectUrl =
+    typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function';
+
+  const revokeScreenshotUrl = (url) => {
+    if (!canRevokeObjectUrl || typeof url !== 'string') return;
+    if (!url.startsWith('blob:')) return;
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore invalid object URLs
+    }
+  };
+
+  const evictCachedScreenshotUrl = (key) => {
+    if (!screenshotUrlCache.has(key)) return;
+    const url = screenshotUrlCache.get(key);
+    revokeScreenshotUrl(url);
+    screenshotUrlCache.delete(key);
+  };
+
+  const clearScreenshotUrlCache = () => {
+    if (!screenshotUrlCache.size) return;
+    for (const url of screenshotUrlCache.values()) {
+      revokeScreenshotUrl(url);
+    }
+    screenshotUrlCache.clear();
+  };
 
   async function getCachedScreenshotUrl(filename) {
     if (!filename) return null;
@@ -275,13 +276,16 @@ window.__SNIPBOARD_STATE__ = state;
 
   const refreshSectionSelect = () => {
     if (!sectionSelect) return;
-    const options = (state.sections || [])
-      .map((sec) => {
-        const label = sec.name || labelForSection(sec.id);
-        return `<option value="${sec.id}">${label}</option>`;
-      })
-      .join('');
-    sectionSelect.innerHTML = options;
+    const doc = sectionSelect.ownerDocument || document;
+    const fragment = doc.createDocumentFragment();
+    (state.sections || []).forEach((sec) => {
+      const option = doc.createElement('option');
+      option.value = sec.id || '';
+      option.textContent = sec.name || labelForSection(sec.id);
+      fragment.appendChild(option);
+    });
+    sectionSelect.textContent = '';
+    sectionSelect.appendChild(fragment);
     const clip = getCurrentClip();
     sectionSelect.value = clip?.sectionId || state.activeTabId || '';
   };
@@ -480,7 +484,9 @@ window.__SNIPBOARD_STATE__ = state;
   }
 
   /** Screenshot editor overlay **/
-  const screenshotEditorPalette = ['#111111', '#0f4ac6', '#c0392b', '#f39c12', '#27ae60', '#ef476f'];
+  const screenshotEditorPalette = Array.isArray(TAB_COLORS) && TAB_COLORS.length
+    ? TAB_COLORS.slice()
+    : ['#6E6E6E', '#CFCFCF', '#F7F3D6', '#485B9A', '#3A7BEB', '#3CB371'];
   let screenshotEditor = null;
 
   function ensureScreenshotEditor() {
@@ -491,9 +497,10 @@ window.__SNIPBOARD_STATE__ = state;
     overlay.innerHTML = `
       <div class="screenshot-editor-dialog">
         <div class="screenshot-editor-toolbar">
-          <button type="button" class="screenshot-editor-tool active" data-tool="pen" aria-label="Pen tool">Pen</button>
-          <button type="button" class="screenshot-editor-tool" data-tool="eraser" aria-label="Eraser tool">Eraser</button>
-          <input type="color" class="screenshot-editor-color-picker" value="#0f172a" aria-label="Brush color" />
+          <div class="screenshot-editor-tools">
+            <button type="button" class="screenshot-editor-tool active" data-tool="pen" aria-label="Pen tool">Pen</button>
+            <button type="button" class="screenshot-editor-tool" data-tool="eraser" aria-label="Eraser tool">Eraser</button>
+          </div>
           <div class="screenshot-editor-swatches">
             ${screenshotEditorPalette
               .map(
@@ -506,6 +513,7 @@ window.__SNIPBOARD_STATE__ = state;
             <button type="button" class="btn ghost" data-action="cancel">Cancel</button>
             <button type="button" class="btn" data-action="save">Save</button>
           </div>
+          <input type="color" class="screenshot-editor-color-picker" value="#0f172a" aria-label="Brush color" />
         </div>
         <canvas class="screenshot-editor-canvas"></canvas>
       </div>
@@ -612,7 +620,7 @@ window.__SNIPBOARD_STATE__ = state;
       try {
         const dataUrl = canvas.toDataURL('image/png');
         await api.saveScreenshot?.([{ filename: state.filename, dataUrl }]);
-        screenshotUrlCache.delete(state.filename);
+        evictCachedScreenshotUrl(state.filename);
         window.SnipToast?.show?.('Screenshot saved');
         const clip = getCurrentClip();
         if (clip) {
@@ -792,7 +800,6 @@ window.__SNIPBOARD_STATE__ = state;
     if (!clip) {
       state.currentClipId = null;
       editorApi?.loadClipIntoEditor?.(null);
-      applyOpenVisibility([], null);
       if (screenshotBox) screenshotBox.innerHTML = '';
       updateEditorControls();
       return;
@@ -810,7 +817,6 @@ window.__SNIPBOARD_STATE__ = state;
       (Array.isArray(clip?.schema) && clip.schema.length ? clip.schema : null) ||
       DEFAULT_SCHEMA;
     editorApi?.applySchemaVisibility?.(schema);
-    applyOpenVisibility(schema, clip);
     const allowScreenshots = Array.isArray(schema) ? schema.includes('screenshots') : true;
     if (!allowScreenshots) {
       if (screenshotBox) {
@@ -866,6 +872,7 @@ window.__SNIPBOARD_STATE__ = state;
     clip.screenshots.push(...filenames);
     normalizeClipScreenshots(clip);
     await api.saveClip?.(clip, { mirror: false });
+    manualClipSelection = true;
     await refreshFull(clip.id);
   }
 
@@ -956,34 +963,6 @@ window.__SNIPBOARD_STATE__ = state;
   const openSourceBtn = document.getElementById('openSourceBtn');
   const screenshotBox = document.getElementById('screenshotContainer');
   if (screenshotBox) screenshotBox.classList.add('screenshots-container');
-
-  const bindOpenClickGuard = () => {
-    if (window.__snipOpenGuardBound) return;
-    window.__snipOpenGuardBound = true;
-    document.addEventListener('click', (event) => {
-      const btn = event.target?.closest?.('[data-action="open-source-url"]');
-      if (!btn) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (window.__snipOpenInFlight) return;
-      window.__snipOpenInFlight = true;
-      const clip = getCurrentClip();
-      const url = safeValidateUrl(clip?.sourceUrl || "");
-      if (!url) {
-        window.__snipOpenInFlight = false;
-        return;
-      }
-      if (typeof api.openUrl === "function") {
-        api.openUrl(url);
-      } else {
-        safeChannel?.(CHANNELS.OPEN_URL || "open-url", url);
-      }
-      setTimeout(() => {
-        window.__snipOpenInFlight = false;
-      }, 300);
-    }, true);
-  };
-  bindOpenClickGuard();
 
   const saveClipBtn = document.getElementById('saveClipBtn');
   const deleteClipBtn = document.getElementById('deleteClipBtn');
@@ -1108,6 +1087,7 @@ window.__SNIPBOARD_STATE__ = state;
         helpers: {
           normalizeClip,
           DEFAULT_SCHEMA,
+          validateUrl,
         },
       })
     : null;
@@ -1118,7 +1098,7 @@ window.__SNIPBOARD_STATE__ = state;
   if (clipsApi?.setModalsApi) clipsApi.setModalsApi(modalsApi);
 
   tabsApi?.onTabChange?.((tab) => {
-    screenshotUrlCache.clear();
+    clearScreenshotUrlCache();
     missingScreenshotSet.clear();
     manualClipSelection = false;
     state.activeTabId = tab?.id || 'all';
@@ -1131,6 +1111,7 @@ window.__SNIPBOARD_STATE__ = state;
   });
 
   clipsApi?.onClipSelected?.((clip) => {
+    clearScreenshotUrlCache();
     manualClipSelection = true;
     state.currentClipId = clip?.id || null;
     void refreshEditor();
@@ -1206,7 +1187,14 @@ window.__SNIPBOARD_STATE__ = state;
           selectedSectionId || state.activeTabId || state.currentSectionId || 'all';
         const data = await api.getData?.();
         const tabsConfig = await safeChannel(CHANNELS.LOAD_TABS);
-        const normalizedTabs = normalizeTabSchemas(tabsConfig?.tabs || state.tabs);
+        const normalizedTabs = applySectionExportPaths(
+          normalizeTabs(tabsConfig?.tabs || state.tabs),
+          data?.sections
+        );
+        const nextSignature = computeSignature(data?.clips || []);
+        if (nextSignature !== lastSignature) {
+          clearScreenshotUrlCache();
+        }
         hydrateState({
           clips: data?.clips,
           tabs: normalizedTabs,
@@ -1270,7 +1258,11 @@ window.__SNIPBOARD_STATE__ = state;
   async function refreshSectionsFromBackend() {
     try {
       const tabsConfig = await safeChannel(CHANNELS.LOAD_TABS);
-      state.tabs = normalizeTabSchemas(tabsConfig?.tabs || state.tabs);
+      const data = await api.getData?.();
+      state.tabs = applySectionExportPaths(
+        normalizeTabs(tabsConfig?.tabs || state.tabs),
+        data?.sections
+      );
       state.activeTabId = tabsConfig?.activeTabId || state.activeTabId;
       refreshSections();
       refreshClipList();
@@ -1298,19 +1290,76 @@ window.__SNIPBOARD_STATE__ = state;
     refreshSectionSelect();
   });
 
-  const pollBackend = () => {
-    setInterval(async () => {
-      try {
-        const payload = await safeChannel(CHANNELS.GET_DATA);
-        const signature = computeSignature(payload?.clips || []);
-        if (signature !== lastSignature) {
-          hydrateState({ clips: payload?.clips });
-          renderAll();
-        }
-      } catch (err) {
-        console.warn('[SnipBoard] poll failed', err);
+  const POLL_BASE_MS = 3000;
+  const POLL_MAX_MS = 15000;
+  let pollDelayMs = POLL_BASE_MS;
+  let pollTimer = null;
+  let pollPaused = false;
+  let pollInitialized = false;
+
+  const shouldPausePolling = () => {
+    if (document.hidden) return true;
+    if (typeof document.hasFocus === 'function' && !document.hasFocus()) return true;
+    return false;
+  };
+
+  const clearPollTimer = () => {
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  };
+
+  const schedulePoll = () => {
+    clearPollTimer();
+    pollTimer = setTimeout(runPoll, pollDelayMs);
+  };
+
+  const updatePollPauseState = () => {
+    const nextPaused = shouldPausePolling();
+    if (nextPaused) {
+      pollPaused = true;
+      clearPollTimer();
+      return;
+    }
+    if (!pollPaused && pollTimer) return;
+    pollPaused = false;
+    pollDelayMs = POLL_BASE_MS;
+    schedulePoll();
+  };
+
+  const runPoll = async () => {
+    if (pollPaused) return;
+    try {
+      const payload = await safeChannel(CHANNELS.GET_DATA);
+      const signature = computeSignature(payload?.clips || []);
+      if (signature !== lastSignature) {
+        clearScreenshotUrlCache();
+        hydrateState({ clips: payload?.clips });
+        renderAll();
+        pollDelayMs = POLL_BASE_MS;
+      } else {
+        pollDelayMs = Math.min(POLL_MAX_MS, Math.round(pollDelayMs * 1.5));
       }
-    }, 3000);
+    } catch (err) {
+      console.warn('[SnipBoard] poll failed', err);
+      pollDelayMs = Math.min(POLL_MAX_MS, Math.round(pollDelayMs * 1.5));
+    } finally {
+      if (!pollPaused) schedulePoll();
+    }
+  };
+
+  const pollBackend = () => {
+    if (pollInitialized) return;
+    pollInitialized = true;
+    pollPaused = shouldPausePolling();
+    document.addEventListener('visibilitychange', updatePollPauseState);
+    window.addEventListener('focus', updatePollPauseState);
+    window.addEventListener('blur', updatePollPauseState);
+    if (!pollPaused) {
+      pollDelayMs = POLL_BASE_MS;
+      schedulePoll();
+    }
   };
 
   const bindToolbar = () => {
@@ -1435,8 +1484,15 @@ window.__SNIPBOARD_STATE__ = state;
     pollBackend();
   };
 
-  document.addEventListener('DOMContentLoaded', init);
-  if (document.readyState !== 'loading') {
+  let hasInitialized = false;
+  const start = () => {
+    if (hasInitialized) return;
+    hasInitialized = true;
     init();
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
   }
 })();

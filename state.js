@@ -153,11 +153,6 @@
       svg: '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="6" width="18" height="12" rx="2" fill="#222222"/><rect x="6" y="9" width="2" height="2" fill="#f5f5f5"/><rect x="9" y="9" width="2" height="2" fill="#f5f5f5"/><rect x="12" y="9" width="2" height="2" fill="#f5f5f5"/><rect x="15" y="9" width="2" height="2" fill="#f5f5f5"/><rect x="18" y="9" width="2" height="2" fill="#f5f5f5"/><rect x="6" y="12" width="12" height="2" fill="#f5f5f5"/></svg>',
     },
     {
-      id: "rocket",
-      label: "Rocket",
-      svg: '<svg viewBox="0 0 24 24" fill="#1CA8A6" xmlns="http://www.w3.org/2000/svg"><path d="M13.4 2.2c2.3.1 4.5 1 6.1 2.6l.3.3-6.7 6.7L10.2 8 13.4 2.2ZM9.6 9.3 7.4 7.1c-1.6 1.3-2.7 3-3.2 4.9l2.9-1 2.5 2.5-1 2.9c1.9-.5 3.6-1.6 4.9-3.2l-2.2-2.2-1.7-1.7Zm3.3 5-2.3 2.3c-.7.7-.7 2 0 2.7l.2.2c.7.7 2 .7 2.7 0l2.3-2.3-2.9-2.9Z"/><path d="M6.7 16.8 4.9 18.6l.5 1.9 1.9.5 1.8-1.8-2.4-2.4Z" fill="#1CA8A6"/></svg>',
-    },
-    {
       id: "bug",
       label: "Bug",
       svg: '<svg viewBox="0 0 24 24" fill="#E44D4D" xmlns="http://www.w3.org/2000/svg"><path d="M10.5 3.5c0-.8.7-1.5 1.5-1.5s1.5.7 1.5 1.5V5h-3V3.5ZM8 5c0-.6.4-1 1-1h6c.6 0 1 .4 1 1v.8c1 .6 1.7 1.6 1.9 2.7h1.1c.6 0 1 .4 1 1s-.4 1-1 1h-1v1.5c0 .3 0 .6-.1.9h1.1c.6 0 1 .4 1 1s-.4 1-1 1h-1.6a6 6 0 0 1-5.4 3.1h-.8A6 6 0 0 1 6 15h-1.6c-.6 0-1-.4-1-1s.4-1 1-1h1.1c-.1-.3-.1-.6-.1-.9V11h-1c-.6 0-1-.4-1-1s.4-1 1-1h1.1A3.7 3.7 0 0 1 8 5.8V5Zm2 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2h-4Z"/></svg>',
@@ -320,8 +315,11 @@
   function normalizeExportPath(pathValue, name) {
     const safeName = name || "tab";
     const raw = typeof pathValue === "string" ? pathValue.trim() : "";
+    if (!raw) {
+      return "";
+    }
     const lowered = raw.toLowerCase().replace(/\\/g, "/");
-    if (!raw || lowered === "data" || lowered === "data/") {
+    if (lowered === "data" || lowered === "data/") {
       return canonicalExportPath(safeName);
     }
     if (lowered === "data/exports" || lowered === "data/exports/") {
@@ -346,14 +344,34 @@
       });
     }
       const sanitizeSchema = (schema) => {
-        // TODO: Keep schema normalization in sync with renderer.js (normalizeTabSchemas).
-        if (!Array.isArray(schema) || !schema.length) return DEFAULT_SCHEMA.slice();
-        const filtered = schema.filter((f) => FIELD_OPTIONS.includes(f));
-        const hasLegacySourceUrl = schema.some((f) => typeof f === "string" && f.toLowerCase() === "sourceurl");
-        if (hasLegacySourceUrl && !filtered.includes("open")) {
-          filtered.push("open");
+        const options = Array.isArray(FIELD_OPTIONS) && FIELD_OPTIONS.length
+          ? FIELD_OPTIONS
+          : DEFAULT_SCHEMA;
+        if (!Array.isArray(schema) || !schema.length) return options.slice();
+        const allowedLower = new Set(
+          options.map((f) => (typeof f === "string" ? f.toLowerCase() : f))
+        );
+        const normalized = schema
+          .map((f) => (typeof f === "string" ? f.trim() : ""))
+          .filter(Boolean)
+          .map((f) => {
+            const lower = f.toLowerCase();
+            if (!allowedLower.has(lower)) return null;
+            const match = options.find(
+              (opt) => typeof opt === "string" && opt.toLowerCase() === lower
+            );
+            return match || lower;
+          })
+          .filter(Boolean);
+        const hasLegacySourceUrl = schema.some(
+          (f) => typeof f === "string" && f.toLowerCase() === "sourceurl"
+        );
+        if (hasLegacySourceUrl && !normalized.includes("open")) {
+          normalized.push("open");
         }
-        return filtered.length ? filtered : DEFAULT_SCHEMA.slice();
+        const seen = new Set();
+        const unique = normalized.filter((f) => !seen.has(f) && seen.add(f));
+        return unique.length ? unique : options.slice();
       };
       const normalizeClipOrder = (order) => {
         if (!Array.isArray(order)) return [];

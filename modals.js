@@ -621,7 +621,8 @@
         ? tab.schema
         : (Array.isArray(global.SnipState?.DEFAULT_SCHEMA) ? global.SnipState.DEFAULT_SCHEMA : []);
       configureFieldsList.innerHTML = "";
-      schemaOptions.forEach((field) => {
+      const fieldsForMenu = schemaOptions.filter((field) => field !== "open");
+      fieldsForMenu.forEach((field) => {
         const row = document.createElement("label");
         row.className = "configure-field-row";
         const input = document.createElement("input");
@@ -629,7 +630,7 @@
         input.value = field;
         input.checked = activeSchema.includes(field);
         const span = document.createElement("span");
-        span.textContent = field === "open" ? "Open" : field;
+        span.textContent = field;
         row.appendChild(input);
         row.appendChild(span);
         configureFieldsList.appendChild(row);
@@ -643,6 +644,9 @@
         const normalized = checked.length
           ? checked.filter((field) => schemaOptions.includes(field))
           : (Array.isArray(global.SnipState?.DEFAULT_SCHEMA) ? global.SnipState.DEFAULT_SCHEMA : []);
+        if (activeSchema.includes("open") && !normalized.includes("open")) {
+          normalized.push("open");
+        }
         if (typeof onSave === "function") {
           await onSave(normalized, tab);
         }

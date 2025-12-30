@@ -1,6 +1,7 @@
 {
   "name": "snipboard",
   "version": "1.4.0",
+  "author": "Your Name <you@example.com>",
   "description": "Local clip + screenshot board with sections (tabs).",
   "main": "main.js",
   "scripts": {

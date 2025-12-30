@@ -1,8 +1,35 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const { openColorPicker } = require("./src/ui/colorPicker.js");
 
+const ALLOWED_INVOKE_CHANNELS = new Set([
+  "get-data",
+  "save-clip",
+  "delete-clip",
+  "create-section",
+  "update-section",
+  "tabs:load",
+  "tabs:save",
+  "choose-export-folder",
+  "open-url",
+  "set-section-export-path",
+  "set-section-locked",
+  "save-section-order",
+  "delete-section",
+]);
+
+const ALLOWED_ON_CHANNELS = new Set([]);
+
+const isAllowedChannel = (channel, allowlist) =>
+  typeof channel === "string" && allowlist.has(channel);
+
 contextBridge.exposeInMainWorld("api", {
-  invoke: (channel, args) => ipcRenderer.invoke(channel, args),
+  invoke: (channel, args) => {
+    if (!isAllowedChannel(channel, ALLOWED_INVOKE_CHANNELS)) {
+      console.warn(`[SnipBoard] Blocked IPC invoke: ${String(channel)}`);
+      return Promise.reject(new Error("Blocked IPC channel"));
+    }
+    return ipcRenderer.invoke(channel, args);
+  },
   send: (channel, args) => {
     const allowedChannels = new Set([
       "get-data",
@@ -22,7 +49,14 @@ contextBridge.exposeInMainWorld("api", {
     if (typeof channel !== "string" || !allowedChannels.has(channel)) return;
     ipcRenderer.send(channel, args);
   },
-  on: (channel, listener) => ipcRenderer.on(channel, listener),
+  on: (channel, listener) => {
+    if (!isAllowedChannel(channel, ALLOWED_ON_CHANNELS)) {
+      console.warn(`[SnipBoard] Blocked IPC listener: ${String(channel)}`);
+      return;
+    }
+    if (typeof listener !== "function") return;
+    ipcRenderer.on(channel, listener);
+  },
   getData: () => ipcRenderer.invoke("get-data"),
   listDisplays: () => ipcRenderer.invoke("list-displays"),
   captureScreen: (displayId) =>

@@ -476,7 +476,9 @@
           content.appendChild(iconWrapper);
         }
         const labelText = doc.createElement('span');
-        labelText.textContent = isAll ? 'All' : tab.label || tab.name || tab.id || 'Tab';
+        const label = isAll ? 'All' : tab.label || tab.name || tab.id || 'Tab';
+        labelText.textContent = label;
+        el.title = label;
         content.appendChild(labelText);
 
         const lockedState = !isAll && tab ? Boolean(tab.locked) : false;
@@ -503,8 +505,7 @@
         }
         if (!isAll && tab?.color) {
           el.classList.add('section-pill--colored');
-          el.style.setProperty('background-color', tab.color);
-          el.style.setProperty('border-color', tab.color);
+          el.style.setProperty('--tab-accent', tab.color);
         }
 
         el.appendChild(content);

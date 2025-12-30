@@ -84,6 +84,13 @@
       toggle(sourceTitleWrapper, 'sourceTitle');
       const shouldShowOpen = matches('open');
       setOpenButtonVisibility(shouldShowOpen);
+      const sourceRow =
+        (openSourceBtn && openSourceBtn.closest && openSourceBtn.closest('.source-meta-row')) ||
+        (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest('.source-meta-row')) ||
+        null;
+      if (sourceRow) {
+        sourceRow.style.display = shouldShowTitle ? '' : 'none';
+      }
     };
 
     const normalizeTags = (input) => {

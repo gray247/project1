@@ -82,7 +82,14 @@
           <div class="main-actions editor-actions">
             <button id="saveClipBtn">Save Clip</button>
             <button id="deleteClipBtn" class="danger">Delete</button>
-            <button id="addShotBtn" class="ghost">+ Add Screenshot</button>
+            <button id="addShotBtn" class="ghost">+ Screenshot</button>
+            <div class="source-url-group">
+              <div class="source-input">
+                <button id="openSourceBtn" data-action="open-source-url" title="Open source URL" class="ghost open-btn">
+                  Open
+                </button>
+              </div>
+            </div>
           </div>
           <div class="field-row title-row">
             <div>
@@ -122,13 +129,6 @@
           </div>
 
           <div class="field-row source-meta-row">
-            <div class="source-url-group">
-              <div class="source-input">
-                <button id="openSourceBtn" data-action="open-source-url" title="Open source URL" class="ghost open-btn">
-                  Open
-                </button>
-              </div>
-            </div>
             <div class="source-title-group">
               <label>Source Title</label>
               <input id="sourceTitleInput" />
