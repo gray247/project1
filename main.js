@@ -1,8 +1,10 @@
+/* eslint-env node */
 const { app, BrowserWindow, ipcMain, desktopCapturer, clipboard, shell, dialog, screen } = require("electron");
 const crypto = require("crypto");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
+const { createClipStorage } = require("./clipStorage");
 
 const LEGACY_BASE_DATA_DIR = path.join("C:\\Dev2\\SnipBoard", "data");
 const BASE_DATA_DIR = path.join(app.getPath("userData"), "SnipBoard");
@@ -165,6 +167,7 @@ const PACKAGED_SCRIPT = `
       });
     };
 
+    // Adaptive layout trigger: re-check title bar overlap after resizes.
     scheduleOverlapCheck();
     window.addEventListener("resize", scheduleOverlapCheck);
   })();
@@ -239,8 +242,14 @@ function migrateDataFiles() {
 }
 
 function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return true;
+  } catch (err) {
+    console.error("[SnipBoard] Failed to ensure directory:", dir, err);
+    return false;
   }
 }
 
@@ -279,6 +288,8 @@ function writeJson(file, data) {
     console.error("[SnipBoard] Failed to write JSON", file, err);
   }
 }
+
+const clipStorage = createClipStorage({ clipsFile: CLIPS_FILE, readJson, writeJson });
 
 function normalizeSectionProtectionFlags(sections) {
   const protectedIds = new Set(["all", "inbox"]);
@@ -324,7 +335,7 @@ function loadData() {
       }))
     : defaultSections;
   const normalizedSections = normalizeSectionProtectionFlags(sections);
-  const clips = readJson(CLIPS_FILE, []);
+  const clips = clipStorage.load();
   return { sections: normalizedSections, clips };
 }
 
@@ -333,7 +344,7 @@ function saveSections(sections) {
 }
 
 function saveClips(clips) {
-  writeJson(CLIPS_FILE, clips);
+  clipStorage.save(clips);
 }
 
 function slugifyTitle(name) {
@@ -423,6 +434,12 @@ async function persistClip(incomingClip, options = {}) {
   } else {
     Object.assign(clip, incomingClip);
   }
+  if (typeof clip.title !== "string") clip.title = "";
+  clip.title = clip.title.trim();
+  if (!clip.title) clip.title = "Untitled";
+  if (typeof clip.text !== "string") clip.text = "";
+  if (typeof clip.notes !== "string") clip.notes = "";
+  if (!Array.isArray(clip.screenshots)) clip.screenshots = [];
   if (clip.appearanceColor !== undefined) delete clip.appearanceColor;
   if (clip.userColor !== undefined) delete clip.userColor;
 
@@ -449,6 +466,60 @@ async function persistClip(incomingClip, options = {}) {
     }
   }
   return clip;
+}
+
+function deleteClipById(id) {
+  const { sections, clips } = loadData();
+  const target = clips.find((c) => c.id === id);
+  if (target && isSectionLockedById(sections, target.sectionId)) {
+    return { blocked: true, reason: "locked-section" };
+  }
+  clipStorage.deleteByIds(id, clips);
+  return { ok: true };
+}
+
+function deleteClipsByIds(ids) {
+  const { sections, clips } = loadData();
+  const idSet = new Set(Array.isArray(ids) ? ids : []);
+  const blocked = [];
+  const allowed = [];
+
+  for (const clip of clips) {
+    if (!idSet.has(clip.id)) {
+      continue;
+    }
+    if (isSectionLockedById(sections, clip.sectionId)) {
+      blocked.push(clip.id);
+    } else {
+      allowed.push(clip.id);
+    }
+  }
+
+  clipStorage.deleteByIds(allowed, clips);
+  return { ok: true, blocked };
+}
+
+function deleteSectionById(id) {
+  const { sections, clips } = loadData();
+  const sectionId =
+    typeof id === "string"
+      ? id.trim()
+      : typeof id === "object" && typeof id?.id === "string"
+      ? id.id.trim()
+      : "";
+  const normalized = sectionId.toLowerCase();
+  const protectedIds = new Set(["all", "inbox"]);
+  if (protectedIds.has(normalized)) {
+    return { ok: false, error: "Cannot delete protected section." };
+  }
+
+  const targetId = sectionId || id;
+  const nextSections = sections.filter((s) => s.id !== targetId);
+  const nextClips = clips.filter((c) => c.sectionId !== targetId);
+
+  saveSections(nextSections);
+  clipStorage.save(nextClips);
+  return { ok: true };
 }
 
 function isSectionLockedById(sections, id) {
@@ -491,13 +562,14 @@ function readRequestBody(req) {
 }
 
 function normalizeClipPayload(payload = {}) {
-  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  const rawTitle = typeof payload.title === "string" ? payload.title.trim() : "";
   const text = typeof payload.text === "string" ? payload.text : "";
-  if (!title && !text) {
+  if (!rawTitle && !text) {
     const err = new Error("Payload must include title or text");
     err.statusCode = 400;
     throw err;
   }
+  const title = rawTitle || "Untitled";
 
   const sectionCandidate = payload.sectionId || payload.section || "inbox";
   const sectionId =
@@ -778,44 +850,40 @@ app.on("before-quit", () => {
 */
 
 ipcMain.handle("get-data", async () => {
-  const { sections, clips } = loadData();
-  return { sections, clips };
+  try {
+    const { sections, clips } = loadData();
+    return { sections, clips };
+  } catch (err) {
+    console.error("[SnipBoard] get-data failed:", err);
+    return { sections: [], clips: [] };
+  }
 });
 
 ipcMain.handle("save-clip", async (_event, incomingClip, options = {}) => {
-  return persistClip(incomingClip, options);
+  try {
+    return await persistClip(incomingClip, options);
+  } catch (err) {
+    console.error("[SnipBoard] save-clip failed:", err);
+    throw err;
+  }
 });
 
 ipcMain.handle("delete-clip", async (_event, id) => {
-  const { sections, clips } = loadData();
-  const target = clips.find((c) => c.id === id);
-  if (target && isSectionLockedById(sections, target.sectionId)) {
-    return { blocked: true, reason: "locked-section" };
+  try {
+    return deleteClipById(id);
+  } catch (err) {
+    console.error("[SnipBoard] delete-clip failed:", err);
+    throw err;
   }
-  const next = clips.filter((c) => c.id !== id);
-  saveClips(next);
-  return { ok: true };
 });
 
 ipcMain.handle("delete-clips", async (_event, ids) => {
-  const { sections, clips } = loadData();
-  const idSet = new Set(Array.isArray(ids) ? ids : []);
-  const blocked = [];
-  const keep = [];
-
-  for (const clip of clips) {
-    if (!idSet.has(clip.id)) {
-      keep.push(clip);
-      continue;
-    }
-    if (isSectionLockedById(sections, clip.sectionId)) {
-      blocked.push(clip.id);
-      keep.push(clip);
-    }
+  try {
+    return deleteClipsByIds(ids);
+  } catch (err) {
+    console.error("[SnipBoard] delete-clips failed:", err);
+    throw err;
   }
-
-  saveClips(keep);
-  return { ok: true, blocked };
 });
 
 ipcMain.handle("create-section", async (_event, name) => {
@@ -864,26 +932,12 @@ ipcMain.handle("update-section", async (_event, payload) => {
 });
 
 ipcMain.handle("delete-section", async (_event, id) => {
-  const { sections, clips } = loadData();
-  const sectionId =
-    typeof id === "string"
-      ? id.trim()
-      : typeof id === "object" && typeof id?.id === "string"
-      ? id.id.trim()
-      : "";
-  const normalized = sectionId.toLowerCase();
-  const protectedIds = new Set(["all", "inbox"]);
-  if (protectedIds.has(normalized)) {
-    return { ok: false, error: "Cannot delete protected section." };
+  try {
+    return deleteSectionById(id);
+  } catch (err) {
+    console.error("[SnipBoard] delete-section failed:", err);
+    throw err;
   }
-
-  const targetId = sectionId || id;
-  const nextSections = sections.filter((s) => s.id !== targetId);
-  const nextClips = clips.filter((c) => c.sectionId !== targetId);
-
-  saveSections(nextSections);
-  saveClips(nextClips);
-  return { ok: true };
 });
 
 ipcMain.handle("save-section-order", async (_event, sectionsPayload) => {
@@ -1007,7 +1061,7 @@ ipcMain.handle("delete-screenshot", async (_event, payload) => {
     const { clipId, filename } = payload || {};
     if (!clipId || !filename) return { success: false, error: "Missing clipId or filename" };
 
-    const clipData = readJson(CLIPS_FILE, []);
+    const clipData = clipStorage.load();
     const clipIdx = clipData.findIndex((c) => c.id === clipId);
     if (clipIdx === -1) return { success: false, error: "Clip not found" };
 
@@ -1021,7 +1075,7 @@ ipcMain.handle("delete-screenshot", async (_event, payload) => {
     }
 
     clipData[clipIdx].screenshots = (clipData[clipIdx].screenshots || []).filter((s) => s !== filename);
-    writeJson(CLIPS_FILE, clipData);
+    clipStorage.save(clipData);
 
     return { success: true, clip: clipData[clipIdx] };
   } catch (err) {
@@ -1204,10 +1258,13 @@ function isValidUrl(url) {
     return false;
   }
 }
+// eslint-disable-next-line no-control-regex -- allow stripping null bytes from external input.
+const sanitizeExternalText = (value) => (typeof value === "string" ? value.replace(/\u0000/g, "") : "");
 
 ipcMain.handle("open-url", async (_event, url) => {
   try {
-    if (!url || !isValidUrl(url)) {
+    const safeUrl = sanitizeExternalText(url);
+    if (!safeUrl || !isValidUrl(safeUrl)) {
       await dialog.showMessageBox({
         type: "warning",
         title: "Invalid URL",
@@ -1216,7 +1273,7 @@ ipcMain.handle("open-url", async (_event, url) => {
       });
       return { success: false };
     }
-    await shell.openExternal(url);
+    await shell.openExternal(safeUrl);
     return { success: true };
   } catch (err) {
     console.error("[SnipBoard] open-url failed:", err);

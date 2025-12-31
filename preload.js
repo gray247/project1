@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const { openColorPicker } = require("./src/ui/colorPicker.js");
 
+// IPC boundary: only allowlisted channels can cross from renderer to main.
 const ALLOWED_INVOKE_CHANNELS = new Set([
   "get-data",
   "save-clip",

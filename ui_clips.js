@@ -85,14 +85,36 @@
       if (typeof callback === 'function') clipSelectedListeners.push(callback);
     };
 
-    const notifySelection = (clip) => {
+    const notifySelection = (clip, meta = {}) => {
       clipSelectedListeners.forEach((cb) => {
         try {
-          cb(clip);
+          cb(clip, meta);
         } catch (err) {
           console.warn('[SnipClips] onClipSelected handler failed', err);
         }
       });
+    };
+
+    const getSelectedClipIds = () => {
+      if (!(app.selectedClipIds instanceof Set)) {
+        app.selectedClipIds = new Set();
+      }
+      return app.selectedClipIds;
+    };
+
+    const clearSelectedClipIds = () => {
+      const selected = getSelectedClipIds();
+      if (selected.size) selected.clear();
+    };
+
+    const toggleSelectedClipId = (clipId) => {
+      if (!clipId) return;
+      const selected = getSelectedClipIds();
+      if (selected.has(clipId)) {
+        selected.delete(clipId);
+      } else {
+        selected.add(clipId);
+      }
     };
 
     const reorderClips = (sourceId, targetId) => {
@@ -149,6 +171,8 @@
           global.alert?.('Clip is in a locked section.');
           return;
         }
+        const selected = getSelectedClipIds();
+        if (selected.size) selected.delete(clip.id);
         app.clips = (app.clips || []).filter((item) => item.id !== clip.id);
         if (app.currentClipId === clip.id) {
           app.currentClipId = app.clips[0]?.id || null;
@@ -331,6 +355,9 @@
         if (clip.id === app.currentClipId) {
           row.classList.add('clip-row--active', 'active');
         }
+        if (getSelectedClipIds().has(clip.id)) {
+          row.classList.add('clip-row--selected');
+        }
 
         const iconEl = createClipIconElement(clip);
         if (iconEl) {
@@ -346,10 +373,14 @@
         title.textContent = clip.title || '(Untitled)';
         row.appendChild(title);
 
-        row.addEventListener('click', () => {
-          app.currentClipId = clip.id;
-          notifySelection(clip);
-          renderClipList();
+        row.addEventListener('click', (event) => {
+          const isMulti = Boolean(event?.metaKey || event?.ctrlKey);
+          if (isMulti) {
+            toggleSelectedClipId(clip.id);
+          } else {
+            clearSelectedClipIds();
+          }
+          notifySelection(clip, { multi: isMulti });
         });
 
         row.addEventListener('contextmenu', (event) => {
@@ -392,7 +423,8 @@
           row.classList.remove('clip-row--drop-target');
         });
 
-        row.addEventListener('drop', () => {
+        row.addEventListener('drop', (event) => {
+          event.preventDefault();
           if (dragSourceId && dragSourceId !== clip.id) {
             reorderClips(dragSourceId, clip.id);
           }
@@ -412,7 +444,8 @@
         if (dragSourceId) event.preventDefault();
       });
 
-      clipListEl.addEventListener('drop', () => {
+      clipListEl.addEventListener('drop', (event) => {
+        event.preventDefault();
         if (dragSourceId) {
           dragSourceId = null;
           renderClipList();

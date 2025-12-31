@@ -19,12 +19,32 @@
 
     const { CHANNELS = {}, safeInvoke, invoke } = ipc;
     const executor = safeInvoke || invoke || (async () => {});
-    const { validateText = (value) => (value || '').slice(0, 1000), validateUrl = (value) => value || '', DEFAULT_SCHEMA = [] } = helpers;
+    const {
+      validateText = (value) => (value || '').slice(0, 1000),
+      validateUrl = (value) => value || '',
+      DEFAULT_SCHEMA = [],
+      openConfirmModal = null,
+    } = helpers;
+    // eslint-disable-next-line no-control-regex -- strip null bytes from external input.
+    const sanitizeExternalText = (value) => (typeof value === 'string' ? value.replace(/\u0000/g, '') : '');
+    const NOTE_SAVE_DEBOUNCE_MS = 400;
+    let noteSaveTimer = null;
+    let noteSavePending = false;
+    let beforeUnloadBound = false;
 
     const getCurrentClip = () => (app.clips || []).find((clip) => clip.id === app.currentClipId) || null;
     const isSectionLocked = () => {
       const renderer = getRendererApi();
       return renderer?.isSectionLocked?.() || false;
+    };
+    const confirmDelete = async (message) => {
+      if (typeof openConfirmModal === 'function') {
+        return openConfirmModal(message);
+      }
+      if (typeof global.confirm === 'function') {
+        return global.confirm(message);
+      }
+      return false;
     };
     const getWrapper = (element) => (element && typeof element.closest === 'function' ? element.closest('div') : null);
 
@@ -169,13 +189,20 @@
       }, 2000);
     };
 
-    const saveClip = async () => {
+    const saveClip = async ({ silent = false } = {}) => {
+      if (!silent && noteSaveTimer) {
+        clearTimeout(noteSaveTimer);
+        noteSaveTimer = null;
+        noteSavePending = false;
+      }
       const clip = getCurrentClip();
       if (!clip) {
-        showToast('No clip selected.');
+        if (!silent) showToast('No clip selected.');
         return;
       }
       const values = getEditorFieldValues();
+      const normalizedTitle = String(values.title || '').trim();
+      values.title = normalizedTitle || 'Untitled';
       const tagsArray = normalizeTags(values.tags);
       values.tags = tagsArray;
       clip.title = String(values.title || '');
@@ -186,17 +213,79 @@
       Object.assign(clip, values);
       try {
         await executor(CHANNELS.SAVE_CLIP, clip);
-        showToast('Clip saved.');
-        loadClipIntoEditor(clip);
-        callRefreshClipList();
-        callRefreshEditor();
+        if (!silent) {
+          showToast('Clip saved.');
+          loadClipIntoEditor(clip);
+          callRefreshClipList();
+          callRefreshEditor();
+        }
       } catch (err) {
         console.error('[SnipEditor] saveClip failed', err);
-        showToast('Failed to save clip.');
+        if (!silent) showToast('Failed to save clip.');
       }
     };
 
+    const flushNoteSave = () => {
+      if (noteSaveTimer) {
+        clearTimeout(noteSaveTimer);
+        noteSaveTimer = null;
+      }
+      if (!noteSavePending) return;
+      noteSavePending = false;
+      saveClip({ silent: true });
+    };
+
+    const scheduleNoteSave = () => {
+      if (!notesInput) return;
+      if (noteSaveTimer) clearTimeout(noteSaveTimer);
+      noteSavePending = true;
+      noteSaveTimer = setTimeout(() => {
+        noteSaveTimer = null;
+        if (!noteSavePending) return;
+        noteSavePending = false;
+        saveClip({ silent: true });
+      }, NOTE_SAVE_DEBOUNCE_MS);
+    };
+
     const deleteClip = async () => {
+      const selectedIds =
+        app.selectedClipIds instanceof Set ? Array.from(app.selectedClipIds) : [];
+      if (selectedIds.length > 1) {
+        if (isSectionLocked()) {
+          showToast('Tab is locked: cannot delete clips.');
+          return;
+        }
+        const confirmed = await confirmDelete(`Delete ${selectedIds.length} selected clips?`);
+        if (!confirmed) return;
+        try {
+          const deleteClips = global.api?.deleteClips;
+          if (typeof deleteClips !== 'function') {
+            showToast('Failed to delete clips.');
+            return;
+          }
+          const result = await deleteClips(selectedIds);
+          const blocked = Array.isArray(result?.blocked) ? result.blocked : [];
+          const blockedSet = new Set(blocked);
+          const removedIds = selectedIds.filter((id) => !blockedSet.has(id));
+          if (removedIds.length) {
+            app.clips = (app.clips || []).filter((item) => !removedIds.includes(item.id));
+          }
+          if (app.selectedClipIds instanceof Set) {
+            app.selectedClipIds.clear();
+          }
+          if (removedIds.includes(app.currentClipId)) {
+            app.currentClipId = null;
+            loadClipIntoEditor(null);
+          }
+          callRefreshClipList();
+          callRefreshEditor();
+        } catch (err) {
+          console.error('[SnipEditor] deleteClips failed', err);
+          showToast('Failed to delete clips.');
+        }
+        return;
+      }
+
       const clip = getCurrentClip();
       if (!clip) {
         showToast('No clip selected.');
@@ -211,6 +300,9 @@
         await executor(deleteChannel, clip.id);
         showToast('Clip deleted.');
         app.clips = (app.clips || []).filter((item) => item.id !== clip.id);
+        if (app.selectedClipIds instanceof Set) {
+          app.selectedClipIds.delete(clip.id);
+        }
         app.currentClipId = null;
         loadClipIntoEditor(null);
         callRefreshClipList();
@@ -230,6 +322,14 @@
         event.preventDefault();
         deleteClip();
       };
+      if (notesInput) {
+        notesInput.addEventListener('input', scheduleNoteSave);
+        notesInput.addEventListener('blur', flushNoteSave);
+      }
+      if (!beforeUnloadBound) {
+        beforeUnloadBound = true;
+        window.addEventListener('beforeunload', flushNoteSave);
+      }
       // Delegated handler for opening source URL; uses stable data-action hook to avoid layout-dependent selectors.
       document.addEventListener('click', (event) => {
         const btn = event.target?.closest?.('[data-action="open-source-url"]');
@@ -238,7 +338,7 @@
         event.stopPropagation();
         if (global.__snipboardOpenInFlight) return;
         global.__snipboardOpenInFlight = true;
-        const url = validateUrl(getStoredSourceUrl());
+        const url = validateUrl(sanitizeExternalText(getStoredSourceUrl()));
         if (!url) {
           global.__snipboardOpenInFlight = false;
           return;
@@ -260,10 +360,10 @@
         textInput.addEventListener('drop', (event) => {
           event.preventDefault();
           const dt = event.dataTransfer;
-          const clipId = dt?.getData('application/x-snipboard-clip-id') || '';
+          const clipId = sanitizeExternalText(dt?.getData('application/x-snipboard-clip-id') || '');
           const clip = (app.clips || []).find((c) => c.id === clipId);
           const titleLine = clip?.title || '(Untitled)';
-          const body = clip?.text || dt?.getData('text/plain') || '';
+          const body = sanitizeExternalText(clip?.text || dt?.getData('text/plain') || '');
           const payload = `---\n${titleLine}\n${body}\n---\n`;
           const input = textInput;
           const start = input.selectionStart ?? input.value.length;

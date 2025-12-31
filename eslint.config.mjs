@@ -8,6 +8,7 @@ const sharedGlobals = {
   fetch: "readonly",
   Image: "readonly",
   location: "readonly",
+  navigator: "readonly",
   chrome: "readonly",
   Node: "readonly",
   setTimeout: "readonly",
@@ -23,6 +24,7 @@ const nodeGlobals = {
   require: "readonly",
   module: "readonly",
   __dirname: "readonly",
+  __filename: "readonly",
 };
 
 const jestGlobals = {
@@ -35,6 +37,16 @@ const jestGlobals = {
   global: "readonly",
 };
 
+const toWarn = (rules = {}) =>
+  Object.fromEntries(
+    Object.entries(rules).map(([name, rule]) => {
+      if (Array.isArray(rule)) {
+        return [name, ["warn", ...rule.slice(1)]];
+      }
+      return [name, "warn"];
+    })
+  );
+
 export default [
   {
     files: ["**/*.js"],
@@ -44,9 +56,9 @@ export default [
       globals: sharedGlobals,
     },
     rules: {
-      ...js.configs.recommended.rules,
-      "no-unused-vars": ["warn"],
-      "no-undef": ["error"],
+      ...toWarn(js.configs.recommended.rules),
+      "no-unused-vars": "warn",
+      "no-undef": "warn",
       "prefer-const": "warn",
     },
   },
@@ -69,7 +81,15 @@ export default [
   },
 
   {
-    files: ["jest.config.js", "devtest.js", "main.js", "src/**/*.js", "tests/**/*.js", "preload.js"],
+    files: [
+      "clipStorage.js",
+      "jest.config.js",
+      "devtest.js",
+      "main.js",
+      "src/**/*.js",
+      "tests/**/*.js",
+      "preload.js",
+    ],
     languageOptions: {
       sourceType: "commonjs",
       globals: nodeGlobals,

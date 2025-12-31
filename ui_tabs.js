@@ -101,6 +101,11 @@
             const slug = base.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
             return slug || 'tab';
           };
+    const RESERVED_SECTION_IDS = new Set(['delete', 'open', 'save', 'drag']);
+    const isReservedSectionId = (value) => {
+      if (!value) return false;
+      return RESERVED_SECTION_IDS.has(String(value).trim().toLowerCase());
+    };
 
     let editorApi = null;
     let modalsApi = null;
@@ -127,9 +132,18 @@
       const response = await promptForTabName();
       const name = cleanSectionName(response);
       if (!name) return;
+      const proposedId = slugifyTabName(name);
+      if (isReservedSectionId(proposedId)) {
+        global.SnipToast?.show?.('That tab name is reserved. Choose another.');
+        return;
+      }
       try {
         const created = await safeInvoke(CHANNELS.CREATE_SECTION, name);
-        const tabId = (created && created.id) || slugifyTabName(name);
+        const tabId = (created && created.id) || proposedId;
+        if (isReservedSectionId(tabId)) {
+          global.SnipToast?.show?.('That tab name is reserved. Choose another.');
+          return;
+        }
         const schema =
           Array.isArray(created?.schema) && created.schema.length
             ? created.schema
@@ -383,30 +397,44 @@
     };
 
     const handleTabDragStart = (event) => {
-      const target = event.target?.closest?.('button.section-pill');
-      const id = target?.dataset?.sectionId;
-      if (!id || id === 'all') return;
-      dragSourceTabId = id;
-      target?.classList.add('section-pill--dragging');
-      event.dataTransfer?.setData('text/plain', id);
+      try {
+        const target = event.target?.closest?.('button.section-pill');
+        const id = target?.dataset?.sectionId;
+        if (!id || id === 'all') return;
+        dragSourceTabId = id;
+        target?.classList.add('section-pill--dragging');
+        event.dataTransfer?.setData('text/plain', id);
+      } catch (err) {
+        dragSourceTabId = null;
+        console.warn('[SnipTabs] dragstart failed', err);
+      }
     };
 
     const handleTabDragOver = (event) => {
       if (!dragSourceTabId) return;
-      event.preventDefault();
+      try {
+        event.preventDefault();
+      } catch (err) {
+        dragSourceTabId = null;
+        console.warn('[SnipTabs] dragover failed', err);
+      }
     };
 
     const handleTabDrop = (event) => {
       if (!dragSourceTabId) return;
-      event.preventDefault();
-      const target = event.target?.closest?.('button.section-pill');
-      const targetId = target?.dataset?.sectionId;
-      if (!targetId || targetId === 'all' || targetId === dragSourceTabId) {
+      try {
+        event.preventDefault();
+        const target = event.target?.closest?.('button.section-pill');
+        const targetId = target?.dataset?.sectionId;
+        if (!targetId || targetId === 'all' || targetId === dragSourceTabId) {
+          return;
+        }
+        reorderTabs(dragSourceTabId, targetId);
+      } catch (err) {
+        console.warn('[SnipTabs] drop failed', err);
+      } finally {
         dragSourceTabId = null;
-        return;
       }
-      reorderTabs(dragSourceTabId, targetId);
-      dragSourceTabId = null;
     };
 
     const bindDragHandlers = () => {
@@ -427,6 +455,10 @@
 
     const setActiveTab = (tabId) => {
       const targetId = tabId || 'all';
+      if (isReservedSectionId(targetId)) {
+        global.SnipToast?.show?.('That tab is reserved and unavailable.');
+        return;
+      }
       if (app.activeTabId === targetId) return;
       app.activeTabId = targetId;
       app.currentSectionId = targetId;
@@ -525,7 +557,10 @@
       const allButton = renderButton(null, true);
       if (allButton) sectionTabs.appendChild(allButton);
 
-      (app.tabs || []).forEach((tab) => {
+      const tabsToRender = (app.tabs || []).filter(
+        (tab) => tab && tab.id && !isReservedSectionId(tab.id)
+      );
+      tabsToRender.forEach((tab) => {
         const tabEl = renderButton(tab);
         if (tabEl) sectionTabs.appendChild(tabEl);
       });

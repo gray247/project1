@@ -1,3 +1,4 @@
+/* eslint-env browser */
 /* global File */
 (() => {
   const api = window.api || {};
@@ -39,6 +40,38 @@
   };
 
 window.__SNIPBOARD_STATE__ = state;
+
+  const RESERVED_SECTION_IDS = new Set(['delete', 'open', 'save', 'drag']);
+  const isReservedSectionId = (value) => {
+    if (!value) return false;
+    return RESERVED_SECTION_IDS.has(String(value).trim().toLowerCase());
+  };
+  const normalizeSectionId = (value) => {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'all' || isReservedSectionId(trimmed)) return '';
+    return trimmed;
+  };
+  const resolveFallbackSectionId = () => {
+    const sections = Array.isArray(state.sections) ? state.sections : [];
+    const fallback = sections.find(
+      (sec) => sec && sec.id && sec.id !== 'all' && !isReservedSectionId(sec.id)
+    );
+    return fallback?.id || 'inbox';
+  };
+  const sanitizeTabsState = (tabs, activeTabId) => {
+    const list = Array.isArray(tabs) ? tabs : [];
+    const safeTabs = list.filter((tab) => tab && tab.id && !isReservedSectionId(tab.id));
+    const safeIds = new Set(safeTabs.map((tab) => tab.id));
+    const nextActive =
+      activeTabId === 'all'
+        ? 'all'
+        : safeIds.has(activeTabId)
+        ? activeTabId
+        : safeTabs[0]?.id || 'all';
+    const changed = safeTabs.length !== list.length || nextActive !== activeTabId;
+    return { tabs: safeTabs, activeTabId: nextActive, changed };
+  };
 
   let refreshFullQueue = Promise.resolve();
 
@@ -105,8 +138,26 @@ window.__SNIPBOARD_STATE__ = state;
     return [];
   }
 
+  const sanitizeExternalText = (value) => {
+    if (typeof value !== 'string') return '';
+    // eslint-disable-next-line no-control-regex -- strip null bytes from external input.
+    return value.replace(/\u0000/g, '');
+  };
+
+  const normalizeClipTitle = (value) => {
+    if (typeof value !== 'string') return 'Untitled';
+    const trimmed = value.trim();
+    return trimmed || 'Untitled';
+  };
+
+  const normalizeClipText = (value) => (typeof value === 'string' ? value : '');
+  const normalizeClipNotes = (value) => (typeof value === 'string' ? value : '');
+
   function sanitizeClipData(clip) {
     if (!clip) return clip;
+    clip.title = normalizeClipTitle(clip.title);
+    clip.text = normalizeClipText(clip.text);
+    clip.notes = normalizeClipNotes(clip.notes);
     if (!Array.isArray(clip.screenshots)) {
       clip.screenshots = [];
     }
@@ -132,7 +183,8 @@ window.__SNIPBOARD_STATE__ = state;
     }
     if (clip.appearanceColor !== undefined) delete clip.appearanceColor;
     if (clip.userColor !== undefined) delete clip.userColor;
-    if (!clip.sectionId) clip.sectionId = 'inbox';
+    const nextSectionId = normalizeSectionId(clip.sectionId) || resolveFallbackSectionId();
+    if (clip.sectionId !== nextSectionId) clip.sectionId = nextSectionId;
     clip.tags = normalizeTags(clip.tags);
     normalizeClipScreenshots(clip);
     return clip;
@@ -210,6 +262,13 @@ window.__SNIPBOARD_STATE__ = state;
 
   const missingScreenshotSet = new Set();
   const screenshotUrlCache = new Map();
+  const reportMissingScreenshot = (filename, context) => {
+    const key = typeof filename === 'string' ? filename : String(filename || '');
+    if (!key || missingScreenshotSet.has(key)) return;
+    missingScreenshotSet.add(key);
+    const suffix = context ? ` (${context})` : '';
+    console.warn(`[SnipBoard] Missing screenshot${suffix}:`, key);
+  };
   const canRevokeObjectUrl =
     typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function';
 
@@ -239,26 +298,29 @@ window.__SNIPBOARD_STATE__ = state;
   };
 
   async function getCachedScreenshotUrl(filename) {
-    if (!filename) return null;
-    if (screenshotUrlCache.has(filename)) {
-      return screenshotUrlCache.get(filename);
+    const safeName = typeof filename === 'string' ? filename : String(filename || '');
+    if (!safeName) return null;
+    if (screenshotUrlCache.has(safeName)) {
+      return screenshotUrlCache.get(safeName);
     }
     try {
-      const url = `${SCREENSHOT_BASE_URL}/${encodeURIComponent(filename)}`;
-      screenshotUrlCache.set(filename, url);
+      const url = `${SCREENSHOT_BASE_URL}/${encodeURIComponent(safeName)}`;
+      screenshotUrlCache.set(safeName, url);
       return url;
     } catch {
-      if (!missingScreenshotSet.has(filename)) {
-        console.warn('Missing screenshot:', filename);
-        missingScreenshotSet.add(filename);
-      }
-      screenshotUrlCache.set(filename, null);
+      reportMissingScreenshot(safeName, 'url');
+      screenshotUrlCache.set(safeName, null);
       return null;
     }
   }
 
   const syncSectionsFromTabs = () => {
-    state.sections = (state.tabs || []).map((tab) => ({
+    const tabs = Array.isArray(state.tabs) ? state.tabs : [];
+    const safeTabs = tabs.filter((tab) => tab && tab.id && !isReservedSectionId(tab.id));
+    if (safeTabs.length !== tabs.length) {
+      state.tabs = safeTabs;
+    }
+    state.sections = safeTabs.map((tab) => ({
       id: tab.id,
       name:
         tab.label ||
@@ -279,6 +341,7 @@ window.__SNIPBOARD_STATE__ = state;
     const doc = sectionSelect.ownerDocument || document;
     const fragment = doc.createDocumentFragment();
     (state.sections || []).forEach((sec) => {
+      if (!sec || !sec.id || isReservedSectionId(sec.id)) return;
       const option = doc.createElement('option');
       option.value = sec.id || '';
       option.textContent = sec.name || labelForSection(sec.id);
@@ -358,6 +421,7 @@ window.__SNIPBOARD_STATE__ = state;
       };
       thumb.appendChild(img);
 
+      // Drag/drop carries the screenshot filename so reordering stays in-memory.
       thumb.addEventListener('dragstart', async (event) => {
         event.dataTransfer.effectAllowed = 'copyMove';
         const filename = thumb.dataset.file;
@@ -392,13 +456,13 @@ window.__SNIPBOARD_STATE__ = state;
       thumb.addEventListener('dragleave', () => {
         thumb.classList.remove('screenshot-thumb--drag-over');
       });
-      thumb.addEventListener('drop', (event) => {
-        event.preventDefault();
-        thumb.classList.remove('screenshot-thumb--drag-over');
-        const dragged = event.dataTransfer.getData('text/plain');
-        const clip = getCurrentClip();
-        if (!clip || !dragged) return;
-        const updated = (clip.screenshots || []).filter((shot) => shot !== dragged);
+        thumb.addEventListener('drop', (event) => {
+          event.preventDefault();
+          thumb.classList.remove('screenshot-thumb--drag-over');
+          const dragged = sanitizeExternalText(event.dataTransfer?.getData('text/plain') || '');
+          const clip = getCurrentClip();
+          if (!clip || !dragged) return;
+          const updated = (clip.screenshots || []).filter((shot) => shot !== dragged);
         const targetIndex = Number(thumb.dataset.index);
         if (!Number.isFinite(targetIndex)) return;
         const insertAt = targetIndex > updated.length ? updated.length : targetIndex;
@@ -698,40 +762,69 @@ window.__SNIPBOARD_STATE__ = state;
     editor.state.escHandler = escHandler;
     window.addEventListener('keydown', escHandler);
   }
+  const isRowVisible = (row, container) => {
+    if (!row || !container) return true;
+    const rowRect = row.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    return rowRect.bottom >= containerRect.top && rowRect.top <= containerRect.bottom;
+  };
+
+  let thumbnailRefreshFrame = null;
+  const scheduleThumbnailRefresh = () => {
+    if (thumbnailRefreshFrame) return;
+    thumbnailRefreshFrame = window.requestAnimationFrame(() => {
+      thumbnailRefreshFrame = null;
+      renderClipThumbnails();
+    });
+  };
+
   async function renderClipThumbnails() {
     if (!clipList) return;
     const rows = clipList.querySelectorAll('.clip-row');
     for (const row of rows) {
+      if (!isRowVisible(row, clipList)) continue;
       const clipId = row.dataset.clipId;
       const container = row.querySelector('.clip-row__thumb');
       if (!clipId || !container) continue;
       const clip = state.clips.find((item) => item.id === clipId);
       if (!clip) {
         container.innerHTML = '';
+        container.dataset.thumbKey = '';
         continue;
       }
       normalizeClipScreenshots(clip);
       const firstShot = (clip.screenshots || [])[0];
       if (!firstShot) {
         container.innerHTML = '';
+        container.dataset.thumbKey = '';
         continue;
       }
+      if (container.dataset.thumbKey === firstShot) continue;
       const url = await getCachedScreenshotUrl(firstShot);
       if (!url) {
         container.innerHTML = '';
+        container.dataset.thumbKey = '';
         continue;
       }
       container.innerHTML = '';
+      container.dataset.thumbKey = firstShot;
       const img = document.createElement('img');
       img.className = 'clip-thumbnail';
       img.alt = clip.title || 'Screenshot';
+      img.onerror = () => {
+        container.innerHTML = '';
+        container.dataset.thumbKey = '';
+        reportMissingScreenshot(firstShot, 'thumbnail');
+      };
       img.src = url;
       container.appendChild(img);
     }
   }
 
   function getActiveSectionId() {
-    return state.activeTabId || state.currentSectionId || 'all';
+    const candidate = state.activeTabId || state.currentSectionId || 'all';
+    if (candidate === 'all') return 'all';
+    return normalizeSectionId(candidate) || resolveFallbackSectionId();
   }
 
   function getCurrentSection() {
@@ -841,54 +934,60 @@ window.__SNIPBOARD_STATE__ = state;
   }
 
   async function handleAddScreenshot() {
-    const clip = getCurrentClip();
-    if (!clip) return;
-    const displays = await api.listDisplays?.();
-    if (!Array.isArray(displays) || displays.length === 0) return;
-    const display = displays[0];
-    const shot = await api.captureScreen?.(display?.id);
-    const captures = Array.isArray(shot?.screenshots)
-      ? shot.screenshots
-      : shot?.dataUrl
-      ? [{ dataUrl: shot.dataUrl, filename: shot.filename }]
-      : [];
-    if (!captures.length) return;
-    const payload = captures
-      .map((item) => ({
-        dataUrl: item?.dataUrl,
-        filename: item?.filename,
-      }))
-      .filter((item) => item.dataUrl);
-    if (!payload.length) return;
-    const savedFiles = await api.saveScreenshot?.(payload);
-    const filenames =
-      Array.isArray(savedFiles) && savedFiles.length
-        ? savedFiles
-            .map((item) => (item && typeof item.filename === 'string' ? item.filename : null))
-            .filter(Boolean)
+    try {
+      const clip = getCurrentClip();
+      if (!clip) return;
+      const displays = await api.listDisplays?.();
+      if (!Array.isArray(displays) || displays.length === 0) return;
+      const display = displays[0];
+      const shot = await api.captureScreen?.(display?.id);
+      const captures = Array.isArray(shot?.screenshots)
+        ? shot.screenshots
+        : shot?.dataUrl
+        ? [{ dataUrl: shot.dataUrl, filename: shot.filename }]
         : [];
-    if (!filenames.length) return;
-    clip.screenshots = Array.isArray(clip.screenshots) ? clip.screenshots : [];
-    clip.screenshots.push(...filenames);
-    normalizeClipScreenshots(clip);
-    await api.saveClip?.(clip, { mirror: false });
-    manualClipSelection = true;
-    await refreshFull(clip.id);
+      if (!captures.length) return;
+      const payload = captures
+        .map((item) => ({
+          dataUrl: item?.dataUrl,
+          filename: item?.filename,
+        }))
+        .filter((item) => item.dataUrl);
+      if (!payload.length) return;
+      const savedFiles = await api.saveScreenshot?.(payload);
+      const filenames =
+        Array.isArray(savedFiles) && savedFiles.length
+          ? savedFiles
+              .map((item) => (item && typeof item.filename === 'string' ? item.filename : null))
+              .filter(Boolean)
+          : [];
+      if (!filenames.length) return;
+      clip.screenshots = Array.isArray(clip.screenshots) ? clip.screenshots : [];
+      clip.screenshots.push(...filenames);
+      normalizeClipScreenshots(clip);
+      await api.saveClip?.(clip, { mirror: false });
+      manualClipSelection = true;
+      await refreshFull(clip.id);
+    } catch (err) {
+      console.error('[SnipBoard] add screenshot failed', err);
+      window.SnipToast?.show?.('Failed to add screenshot');
+    }
   }
 
   const resolveNewClipSectionId = () => {
-    const activeSection = getActiveSectionId();
-    if (activeSection && activeSection !== 'all') return activeSection;
-    if (state.currentSectionId && state.currentSectionId !== 'all') return state.currentSectionId;
-    if (state.activeTabId && state.activeTabId !== 'all') return state.activeTabId;
-    return 'inbox';
+    const candidates = [getActiveSectionId(), state.currentSectionId, state.activeTabId];
+    for (const candidate of candidates) {
+      const normalized = normalizeSectionId(candidate);
+      if (normalized) return normalized;
+    }
+    return resolveFallbackSectionId();
   };
 
   const readClipboardText = async () => {
     try {
       if (typeof api.getClipboardText === 'function') {
         const value = await api.getClipboardText();
-        if (typeof value === 'string') return value;
+        if (typeof value === 'string') return sanitizeExternalText(value);
       }
     } catch (err) {
       console.warn('[SnipBoard] Clipboard read via IPC failed', err);
@@ -896,7 +995,7 @@ window.__SNIPBOARD_STATE__ = state;
     try {
       if (navigator?.clipboard?.readText) {
         const value = await navigator.clipboard.readText();
-        if (typeof value === 'string') return value;
+        if (typeof value === 'string') return sanitizeExternalText(value);
       }
     } catch (err) {
       console.warn('[SnipBoard] Clipboard read via navigator failed', err);
@@ -907,8 +1006,9 @@ window.__SNIPBOARD_STATE__ = state;
   async function createNewClip() {
     const sectionId = resolveNewClipSectionId();
     const clipboardText = await readClipboardText();
+    const title = normalizeClipTitle('');
     const clip = {
-      title: '',
+      title,
       text: clipboardText,
       notes: '',
       tags: [],
@@ -934,8 +1034,9 @@ window.__SNIPBOARD_STATE__ = state;
     sectionSelect.onchange = () => {
       const clip = getCurrentClip();
       if (clip) {
-        clip.sectionId = sectionSelect.value;
-        state.currentSectionId = sectionSelect.value;
+        const nextSectionId = normalizeSectionId(sectionSelect.value) || resolveFallbackSectionId();
+        clip.sectionId = nextSectionId;
+        state.currentSectionId = nextSectionId;
       }
     };
   }
@@ -1088,6 +1189,7 @@ window.__SNIPBOARD_STATE__ = state;
           normalizeClip,
           DEFAULT_SCHEMA,
           validateUrl,
+          openConfirmModal: modalsApi?.openConfirmModal,
         },
       })
     : null;
@@ -1110,11 +1212,17 @@ window.__SNIPBOARD_STATE__ = state;
     void refreshEditor();
   });
 
-  clipsApi?.onClipSelected?.((clip) => {
+  clipsApi?.onClipSelected?.((clip, meta = {}) => {
     clearScreenshotUrlCache();
     manualClipSelection = true;
-    state.currentClipId = clip?.id || null;
-    void refreshEditor();
+    const isMulti = Boolean(meta?.multi);
+    if (!isMulti) {
+      state.currentClipId = clip?.id || null;
+      refreshClipList();
+      void refreshEditor();
+      return;
+    }
+    refreshClipList();
   });
 
   const computeSignature = (clips = []) =>
@@ -1191,14 +1299,26 @@ window.__SNIPBOARD_STATE__ = state;
           normalizeTabs(tabsConfig?.tabs || state.tabs),
           data?.sections
         );
+        const sanitizedTabs = sanitizeTabsState(
+          normalizedTabs,
+          tabsConfig?.activeTabId || state.activeTabId
+        );
+        if (sanitizedTabs.changed && typeof safeChannel === 'function') {
+          safeChannel(CHANNELS.SAVE_TABS, {
+            tabs: sanitizedTabs.tabs,
+            activeTabId: sanitizedTabs.activeTabId,
+          }).catch((err) => {
+            console.warn('[SnipBoard] Failed to save sanitized tabs', err);
+          });
+        }
         const nextSignature = computeSignature(data?.clips || []);
         if (nextSignature !== lastSignature) {
           clearScreenshotUrlCache();
         }
         hydrateState({
           clips: data?.clips,
-          tabs: normalizedTabs,
-          activeTabId: tabsConfig?.activeTabId,
+          tabs: sanitizedTabs.tabs,
+          activeTabId: sanitizedTabs.activeTabId,
         }, targetSectionId);
         if (selectedClipId) {
           const exists = (state.clips || []).some((clip) => clip.id === selectedClipId);
@@ -1259,11 +1379,24 @@ window.__SNIPBOARD_STATE__ = state;
     try {
       const tabsConfig = await safeChannel(CHANNELS.LOAD_TABS);
       const data = await api.getData?.();
-      state.tabs = applySectionExportPaths(
+      const normalizedTabs = applySectionExportPaths(
         normalizeTabs(tabsConfig?.tabs || state.tabs),
         data?.sections
       );
-      state.activeTabId = tabsConfig?.activeTabId || state.activeTabId;
+      const sanitizedTabs = sanitizeTabsState(
+        normalizedTabs,
+        tabsConfig?.activeTabId || state.activeTabId
+      );
+      if (sanitizedTabs.changed && typeof safeChannel === 'function') {
+        safeChannel(CHANNELS.SAVE_TABS, {
+          tabs: sanitizedTabs.tabs,
+          activeTabId: sanitizedTabs.activeTabId,
+        }).catch((err) => {
+          console.warn('[SnipBoard] Failed to save sanitized tabs', err);
+        });
+      }
+      state.tabs = sanitizedTabs.tabs;
+      state.activeTabId = sanitizedTabs.activeTabId || state.activeTabId;
       refreshSections();
       refreshClipList();
     } catch (err) {
@@ -1476,10 +1609,19 @@ window.__SNIPBOARD_STATE__ = state;
     }
   };
 
+  let thumbnailListenersBound = false;
+  const bindThumbnailLazyLoad = () => {
+    if (!clipList || thumbnailListenersBound) return;
+    clipList.addEventListener('scroll', scheduleThumbnailRefresh);
+    window.addEventListener('resize', scheduleThumbnailRefresh);
+    thumbnailListenersBound = true;
+  };
+
   const init = async () => {
     await refreshFull();
     bindToolbar();
     bindFilters();
+    bindThumbnailLazyLoad();
     editorApi?.bindEditorEvents?.();
     pollBackend();
   };

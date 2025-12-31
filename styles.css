@@ -568,6 +568,16 @@ body:has(#packaged-title-bar) .packaged-control-btn:active {
   outline: none;
 }
 
+.clip-row--selected {
+  outline: 2px solid color-mix(in srgb, var(--clip-accent, var(--accent-strong)) 55%, #cbd5f5);
+  outline-offset: -1px;
+}
+
+.clip-row--selected.clip-row--active,
+.clip-row--selected.active {
+  outline-color: var(--clip-accent, var(--accent-strong));
+}
+
 .clip-row--colored {
   border-left: 1px solid #e2e8fb;
   background-color: #fff;
@@ -1923,9 +1933,10 @@ button.ghost {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  background: #f6f7fb;
-  color: #111;
-  border: 1px solid #d0d7e2;
+  background: #111827;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
   padding: 10px 16px;
   border-radius: 8px;
   opacity: 0;
