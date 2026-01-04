@@ -43,6 +43,43 @@
       return String(value).trim().slice(0, 100);
     };
 
+    const tabCollapseKey = 'snipboard.tabs-collapsed';
+    const tabSessionStorage = (() => {
+      try {
+        return global.sessionStorage || null;
+      } catch (err) {
+        return null;
+      }
+    })();
+    const getTabsCollapsed = () => {
+      if (!tabSessionStorage) return false;
+      try {
+        return tabSessionStorage.getItem(tabCollapseKey) === 'true';
+      } catch (err) {
+        return false;
+      }
+    };
+    const setTabsCollapsed = (value) => {
+      if (!tabSessionStorage) return;
+      try {
+        tabSessionStorage.setItem(tabCollapseKey, value ? 'true' : 'false');
+      } catch (err) {
+        void err;
+      }
+    };
+    const tagsVisibilityKeyPrefix = 'snipboard.tags-visible.';
+    const setTagsVisibilityOverride = (sectionId, enabled) => {
+      if (!tabSessionStorage || !sectionId) return;
+      try {
+        tabSessionStorage.setItem(
+          `${tagsVisibilityKeyPrefix}${sectionId}`,
+          enabled ? 'true' : 'false'
+        );
+      } catch (err) {
+        void err;
+      }
+    };
+
     const persistTabsConfig = async () => {
       try {
         await safeInvoke(CHANNELS.SAVE_TABS, {
@@ -51,7 +88,7 @@
         });
         return true;
       } catch (err) {
-        console.error('[SnipTabs] save tabs failed', err);
+        console.error('Save tabs failed', err);
         global.alert?.('Unable to save tabs.');
         return false;
       }
@@ -70,7 +107,7 @@
         }
         return true;
       } catch (err) {
-        console.warn('[SnipTabs] persistSectionOrder failed', err);
+        console.warn('Persist section order failed', err);
         return false;
       }
     };
@@ -88,6 +125,11 @@
     const getActiveTabSchema = () => {
       const tab = getActiveTab();
       return tab && Array.isArray(tab.schema) && tab.schema.length ? tab.schema : [];
+    };
+    const getClipCount = (sectionId) => {
+      const clips = Array.isArray(app.clips) ? app.clips : [];
+      if (!sectionId || sectionId === 'all') return clips.length;
+      return clips.filter((clip) => clip && clip.sectionId === sectionId).length;
     };
     const DEFAULT_SCHEMA =
       (Array.isArray(global.SnipState?.DEFAULT_SCHEMA) && global.SnipState.DEFAULT_SCHEMA.length
@@ -131,18 +173,18 @@
     const createTab = async () => {
       const response = await promptForTabName();
       const name = cleanSectionName(response);
-      if (!name) return;
+      if (!name) return false;
       const proposedId = slugifyTabName(name);
       if (isReservedSectionId(proposedId)) {
         global.SnipToast?.show?.('That tab name is reserved. Choose another.');
-        return;
+        return false;
       }
       try {
         const created = await safeInvoke(CHANNELS.CREATE_SECTION, name);
         const tabId = (created && created.id) || proposedId;
         if (isReservedSectionId(tabId)) {
           global.SnipToast?.show?.('That tab name is reserved. Choose another.');
-          return;
+          return false;
         }
         const schema =
           Array.isArray(created?.schema) && created.schema.length
@@ -165,11 +207,13 @@
         renderTabs();
         setActiveTab(newTab.id);
         const savedTabs = await persistTabsConfig();
-        if (!savedTabs) return;
+        if (!savedTabs) return false;
         notifySectionUpdate();
+        return true;
       } catch (err) {
-        console.error('[SnipTabs] create tab failed', err);
+        console.error('Create tab failed', err);
         global.alert?.('Unable to create tab.');
+        return false;
       }
     };
 
@@ -183,7 +227,7 @@
         try {
           cb(active);
         } catch (err) {
-          console.warn('[SnipTabs] onTabChange handler failed', err);
+          console.warn('Tab change handler failed', err);
         }
       });
     };
@@ -216,7 +260,7 @@
         if (!persisted) return;
         notifySectionUpdate();
       } catch (err) {
-        console.error('[SnipTabs] lock toggle failed', err);
+        console.error('Lock toggle failed', err);
       }
     };
 
@@ -228,6 +272,9 @@
         modalsApi?.openConfigureFieldsModal?.(tab, async (schema) => {
           const nextSchema = Array.isArray(schema) && schema.length ? schema : tab.schema;
           tab.schema = nextSchema;
+          const tagsEnabled = Array.isArray(nextSchema)
+            && nextSchema.some((field) => String(field).toLowerCase() === 'tags');
+          setTagsVisibilityOverride(tab.id, tagsEnabled);
           const savedTabs = await persistTabsConfig();
           if (!savedTabs) return;
           notifySectionUpdate();
@@ -279,7 +326,7 @@
           tab.exportPath = folderResult.path;
           notifySectionUpdate();
         } catch (err) {
-          console.error('[SnipTabs] folder update failed', err);
+          console.error('Folder update failed', err);
         }
       } else if (action === 'lock') {
         try {
@@ -298,7 +345,7 @@
           if (!persisted) return;
           notifySectionUpdate();
         } catch (err) {
-          console.error('[SnipTabs] lock toggle failed', err);
+          console.error('Lock toggle failed', err);
         }
       } else if (action === 'delete') {
         if (tab.locked) {
@@ -329,7 +376,7 @@
           callRefreshClipList();
           dispatchSectionsUpdated();
         } catch (err) {
-          console.error('[SnipTabs] delete section failed', err);
+          console.error('Delete section failed', err);
           global.alert?.('Failed to delete section.');
         }
       }
@@ -390,8 +437,9 @@
           tabs.map((tab) => ({ id: tab.id, name: tab.label || tab.name || tab.id }))
         );
       } catch (err) {
-        console.warn('[SnipTabs] save section order failed', err);
+        console.warn('Save section order failed', err);
       }
+      await persistTabsConfig();
       callRefreshClipList();
       dispatchSectionsUpdated();
     };
@@ -406,7 +454,7 @@
         event.dataTransfer?.setData('text/plain', id);
       } catch (err) {
         dragSourceTabId = null;
-        console.warn('[SnipTabs] dragstart failed', err);
+        console.warn('Dragstart failed', err);
       }
     };
 
@@ -416,7 +464,7 @@
         event.preventDefault();
       } catch (err) {
         dragSourceTabId = null;
-        console.warn('[SnipTabs] dragover failed', err);
+        console.warn('Dragover failed', err);
       }
     };
 
@@ -431,7 +479,7 @@
         }
         reorderTabs(dragSourceTabId, targetId);
       } catch (err) {
-        console.warn('[SnipTabs] drop failed', err);
+        console.warn('Drop failed', err);
       } finally {
         dragSourceTabId = null;
       }
@@ -453,13 +501,20 @@
       });
     };
 
+    const isLauncherMode = () => {
+      const appRoot = doc ? doc.getElementById('app') : null;
+      return appRoot?.classList.contains('is-narrow');
+    };
+
     const setActiveTab = (tabId) => {
       const targetId = tabId || 'all';
       if (isReservedSectionId(targetId)) {
         global.SnipToast?.show?.('That tab is reserved and unavailable.');
         return;
       }
-      if (app.activeTabId === targetId) return;
+      const isSameTab = app.activeTabId === targetId;
+      const hasActiveClip = Boolean(app.currentClipId);
+      if (isSameTab && !isLauncherMode() && !hasActiveClip) return;
       app.activeTabId = targetId;
       app.currentSectionId = targetId;
       const schema = getActiveTabSchema();
@@ -508,10 +563,17 @@
           content.appendChild(iconWrapper);
         }
         const labelText = doc.createElement('span');
+        labelText.className = 'section-pill__label';
         const label = isAll ? 'All' : tab.label || tab.name || tab.id || 'Tab';
         labelText.textContent = label;
         el.title = label;
         content.appendChild(labelText);
+
+        const count = getClipCount(isAll ? 'all' : tab.id);
+        const meta = doc.createElement('span');
+        meta.className = 'section-pill__meta';
+        meta.textContent = String(count);
+        content.appendChild(meta);
 
         const lockedState = !isAll && tab ? Boolean(tab.locked) : false;
         const lockEl = doc.createElement('span');
@@ -560,9 +622,57 @@
       const tabsToRender = (app.tabs || []).filter(
         (tab) => tab && tab.id && !isReservedSectionId(tab.id)
       );
+      const tabsCollapsed = getTabsCollapsed();
+      const groupHeader = doc.createElement('button');
+      groupHeader.type = 'button';
+      groupHeader.className = 'section-group-header';
+      groupHeader.classList.toggle('section-group-header--collapsed', tabsCollapsed);
+      groupHeader.setAttribute('aria-expanded', tabsCollapsed ? 'false' : 'true');
+      groupHeader.setAttribute('aria-label', 'Toggle sections');
+
+      const caret = doc.createElement('span');
+      caret.className = 'section-group-header__caret';
+      caret.textContent = tabsCollapsed ? '>' : 'v';
+
+      const label = doc.createElement('span');
+      label.className = 'section-group-header__label';
+      label.textContent = 'Sections';
+
+      groupHeader.appendChild(caret);
+      groupHeader.appendChild(label);
+      sectionTabs.appendChild(groupHeader);
+
+      const groupBody = doc.createElement('div');
+      groupBody.className = 'section-group';
+      groupBody.hidden = tabsCollapsed;
+
       tabsToRender.forEach((tab) => {
         const tabEl = renderButton(tab);
-        if (tabEl) sectionTabs.appendChild(tabEl);
+        if (tabEl) groupBody.appendChild(tabEl);
+      });
+
+      groupHeader.addEventListener('click', (event) => {
+        event.preventDefault();
+        const nextCollapsed = !groupBody.hidden;
+        groupBody.hidden = nextCollapsed;
+        groupHeader.classList.toggle('section-group-header--collapsed', nextCollapsed);
+        groupHeader.setAttribute('aria-expanded', nextCollapsed ? 'false' : 'true');
+        caret.textContent = nextCollapsed ? '>' : 'v';
+        setTabsCollapsed(nextCollapsed);
+      });
+
+      sectionTabs.appendChild(groupBody);
+    };
+
+    const updateTabCounts = () => {
+      if (!sectionTabs) return;
+      const buttons = Array.from(sectionTabs.querySelectorAll('button.section-pill'));
+      buttons.forEach((button) => {
+        const sectionId = button.dataset.sectionId;
+        if (!sectionId) return;
+        const meta = button.querySelector('.section-pill__meta');
+        if (!meta) return;
+        meta.textContent = String(getClipCount(sectionId));
       });
     };
 
@@ -578,6 +688,7 @@
       setEditorApi,
       setModalsApi,
       renderTabs,
+      updateTabCounts,
     };
   }
 

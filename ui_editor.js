@@ -31,6 +31,8 @@
     let noteSaveTimer = null;
     let noteSavePending = false;
     let beforeUnloadBound = false;
+    let notesResizeBound = false;
+    const TAGS_VISIBILITY_KEY_PREFIX = 'snipboard.tags-visible.';
 
     const getCurrentClip = () => (app.clips || []).find((clip) => clip.id === app.currentClipId) || null;
     const isSectionLocked = () => {
@@ -79,15 +81,68 @@
       }
     };
     const getStoredSourceUrl = () => getCurrentClip()?.sourceUrl || '';
+    const tagsSessionStorage = (() => {
+      try {
+        return global.sessionStorage || null;
+      } catch (err) {
+        return null;
+      }
+    })();
+    const getTagsVisibilityKey = (sectionId) =>
+      sectionId ? `${TAGS_VISIBILITY_KEY_PREFIX}${sectionId}` : '';
+    const isTagsExplicitlyEnabled = (sectionId) => {
+      if (!tagsSessionStorage) return false;
+      const key = getTagsVisibilityKey(sectionId);
+      if (!key) return false;
+      try {
+        return tagsSessionStorage.getItem(key) === 'true';
+      } catch (err) {
+        return false;
+      }
+    };
+    const normalizeSchemaField = (value) =>
+      typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const isDefaultSchema = (schema) => {
+      if (!Array.isArray(DEFAULT_SCHEMA) || DEFAULT_SCHEMA.length === 0) return false;
+      const list = Array.isArray(schema) ? schema : [];
+      if (list.length !== DEFAULT_SCHEMA.length) return false;
+      const normalized = list.map(normalizeSchemaField);
+      const baseline = DEFAULT_SCHEMA.map(normalizeSchemaField);
+      return normalized.every((value, index) => value === baseline[index]);
+    };
 
     removeSourceUrlField();
 
+    const syncNotesHeight = () => {
+      if (!notesInput) return;
+      if (notesInput.offsetParent === null) return;
+      notesInput.style.height = 'auto';
+      const nextHeight = notesInput.scrollHeight || 0;
+      if (nextHeight) {
+        notesInput.style.height = `${nextHeight}px`;
+      }
+    };
+
     const applySchemaVisibility = (schema) => {
       const normalized = Array.isArray(schema) && schema.length ? schema : DEFAULT_SCHEMA;
+      const activeSectionId =
+        getCurrentClip()?.sectionId ||
+        app.activeTabId ||
+        app.currentSectionId ||
+        '';
       // Support case differences (e.g., SourceUrl/SourceTitle) without altering schema keys.
       const schemaSet = new Set(normalized);
       const schemaLower = new Set(normalized.map((f) => (typeof f === 'string' ? f.toLowerCase() : f)));
-      const matches = (field) => schemaSet.has(field) || schemaLower.has(field.toLowerCase());
+      const hasField = (field) => schemaSet.has(field) || schemaLower.has(field.toLowerCase());
+      const usingDefaultSchema = isDefaultSchema(normalized);
+      const matches = (field) => {
+        if (field === 'tags') {
+          if (!hasField(field)) return false;
+          if (!usingDefaultSchema) return true;
+          return isTagsExplicitlyEnabled(activeSectionId);
+        }
+        return hasField(field);
+      };
       const toggle = (element, field) => {
         if (!element) return;
         element.style.display = matches(field) ? '' : 'none';
@@ -97,6 +152,22 @@
       toggle(getWrapper(notesInput), 'notes');
       toggle(getWrapper(tagsInput), 'tags');
       toggle(getWrapper(capturedAtInput), 'capturedAt');
+      if (tagsInput) {
+        const tagsWrapper = getWrapper(tagsInput);
+        if (tagsWrapper) tagsWrapper.classList.toggle('is-hidden', !matches('tags'));
+      }
+      if (capturedAtInput) {
+        const capturedWrapper = getWrapper(capturedAtInput);
+        if (capturedWrapper) {
+          const tagVisibility = matches('tags');
+          const capturedVisibility = matches('capturedAt');
+          const row = capturedWrapper.closest('.tags-row');
+          if (row) {
+            row.classList.toggle('tags-row--single', tagVisibility !== capturedVisibility);
+            row.classList.toggle('tags-row--hidden', !tagVisibility && !capturedVisibility);
+          }
+        }
+      }
       const sourceTitleWrapper =
         (sourceTitleInput && sourceTitleInput.closest && sourceTitleInput.closest('.source-title-group')) ||
         (sourceTitleInput ? sourceTitleInput.parentElement : null);
@@ -111,6 +182,7 @@
       if (sourceRow) {
         sourceRow.style.display = shouldShowTitle ? '' : 'none';
       }
+      syncNotesHeight();
     };
 
     const normalizeTags = (input) => {
@@ -159,6 +231,7 @@
           if (el) el.value = '';
         });
         syncCurrentSourceUrl('');
+        syncNotesHeight();
         return;
       }
       if (titleInput) titleInput.value = target.title || '';
@@ -172,6 +245,7 @@
       syncCurrentSourceUrl(target.sourceUrl || '');
       if (sourceTitleInput) sourceTitleInput.value = target.sourceTitle || '';
       applySchemaVisibility(target.schema || []);
+      syncNotesHeight();
     };
 
     const showToast = (message) => {
@@ -220,7 +294,7 @@
           callRefreshEditor();
         }
       } catch (err) {
-        console.error('[SnipEditor] saveClip failed', err);
+        console.error('Save clip failed', err);
         if (!silent) showToast('Failed to save clip.');
       }
     };
@@ -280,7 +354,7 @@
           callRefreshClipList();
           callRefreshEditor();
         } catch (err) {
-          console.error('[SnipEditor] deleteClips failed', err);
+          console.error('Delete clips failed', err);
           showToast('Failed to delete clips.');
         }
         return;
@@ -308,7 +382,7 @@
         callRefreshClipList();
         callRefreshEditor();
       } catch (err) {
-        console.error('[SnipEditor] deleteClip failed', err);
+        console.error('Delete clip failed', err);
         showToast('Failed to delete clip.');
       }
     };
@@ -323,8 +397,17 @@
         deleteClip();
       };
       if (notesInput) {
-        notesInput.addEventListener('input', scheduleNoteSave);
+        const handleNotesInput = () => {
+          syncNotesHeight();
+          scheduleNoteSave();
+        };
+        notesInput.addEventListener('input', handleNotesInput);
         notesInput.addEventListener('blur', flushNoteSave);
+        syncNotesHeight();
+      }
+      if (!notesResizeBound) {
+        notesResizeBound = true;
+        window.addEventListener('resize', syncNotesHeight);
       }
       if (!beforeUnloadBound) {
         beforeUnloadBound = true;

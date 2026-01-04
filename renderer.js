@@ -109,18 +109,38 @@ window.__SNIPBOARD_STATE__ = state;
   const resolveClipForSection = (sectionId) => {
     const clips = state.clips || [];
     const targetSection = sectionId || getActiveSectionId();
+    const currentId = state.currentClipId;
+    if (!currentId) return null;
     if (targetSection === 'all') {
-      return clips.find((clip) => clip.id === state.currentClipId) || clips[0] || null;
+      return clips.find((clip) => clip.id === currentId) || null;
     }
-    const currentInSection = clips.find(
-      (clip) => clip.id === state.currentClipId && clip.sectionId === targetSection
-    );
-    if (currentInSection) return currentInSection;
-    return clips.find((clip) => clip.sectionId === targetSection) || null;
+    return clips.find(
+      (clip) => clip.id === currentId && clip.sectionId === targetSection
+    ) || null;
   };
 
-  const getCurrentClip = () => resolveClipForSection(getActiveSectionId());
+  const getCurrentClip = () => resolveClipForSection(getActiveSectionId());     
   let manualClipSelection = false;
+  let lastWindowMode = null;
+
+  const WINDOW_MODES = Object.freeze({
+    FULL: 'full',
+    WRITING: 'writing',
+    TABS: 'tabs',
+    MINIMIZED: 'minimized',
+  });
+
+  const resolveLayoutMode = () => {
+    if (state.currentClipId) return 'review';
+    if (state.activeTabId) return 'work';
+    return 'launcher';
+  };
+
+  const resolveWindowMode = () => {
+    if (state.currentClipId) return WINDOW_MODES.WRITING;
+    if (state.activeTabId) return WINDOW_MODES.TABS;
+    return WINDOW_MODES.MINIMIZED;
+  };
 
   const hasSchemaField = (schema, field) => {
     if (!Array.isArray(schema)) return false;
@@ -267,10 +287,85 @@ window.__SNIPBOARD_STATE__ = state;
     if (!key || missingScreenshotSet.has(key)) return;
     missingScreenshotSet.add(key);
     const suffix = context ? ` (${context})` : '';
-    console.warn(`[SnipBoard] Missing screenshot${suffix}:`, key);
+    console.warn(`Missing screenshot${suffix}:`, key);
   };
   const canRevokeObjectUrl =
     typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function';
+
+  let editorRoot = null;
+  let editorMountMarker = null;
+  let clipPaneRoot = null;
+  let clipPaneMountMarker = null;
+  const ensureEditorMount = () => {
+    if (editorRoot) return;
+    editorRoot = document.getElementById('editor');
+    if (!editorRoot) return;
+    const parent = editorRoot.parentNode;
+    if (!parent) return;
+    editorMountMarker = document.createComment('snipboard-editor-mount');
+    parent.insertBefore(editorMountMarker, editorRoot);
+  };
+  const ensureClipPaneMount = () => {
+    if (clipPaneRoot) return;
+    clipPaneRoot = document.getElementById('clipPane');
+    if (!clipPaneRoot) return;
+    const parent = clipPaneRoot.parentNode;
+    if (!parent) return;
+    clipPaneMountMarker = document.createComment('snipboard-clippane-mount');
+    parent.insertBefore(clipPaneMountMarker, clipPaneRoot);
+  };
+  const syncEditorMount = (shouldMount) => {
+    ensureEditorMount();
+    if (!editorRoot || !editorMountMarker) return;
+    if (!shouldMount) {
+      if (editorRoot.parentNode) {
+        editorRoot.parentNode.removeChild(editorRoot);
+      }
+      return;
+    }
+    if (!editorRoot.parentNode) {
+      const parent = editorMountMarker.parentNode;
+      if (parent) {
+        parent.insertBefore(editorRoot, editorMountMarker.nextSibling);
+      }
+    }
+  };
+  const syncClipPaneMount = (shouldMount) => {
+    ensureClipPaneMount();
+    if (!clipPaneRoot || !clipPaneMountMarker) return;
+    if (!shouldMount) {
+      if (clipPaneRoot.parentNode) {
+        clipPaneRoot.parentNode.removeChild(clipPaneRoot);
+      }
+      return;
+    }
+    if (!clipPaneRoot.parentNode) {
+      const parent = clipPaneMountMarker.parentNode;
+      if (parent) {
+        parent.insertBefore(clipPaneRoot, clipPaneMountMarker.nextSibling);
+        refreshClipThumbnails();
+      }
+    }
+  };
+
+  const applyWindowModeLayout = (mode) => {
+    switch (mode) {
+      case WINDOW_MODES.MINIMIZED:
+        syncClipPaneMount(false);
+        syncEditorMount(false);
+        break;
+      case WINDOW_MODES.TABS:
+        syncClipPaneMount(true);
+        syncEditorMount(false);
+        break;
+      case WINDOW_MODES.WRITING:
+      case WINDOW_MODES.FULL:
+      default:
+        syncClipPaneMount(true);
+        syncEditorMount(true);
+        break;
+    }
+  };
 
   const revokeScreenshotUrl = (url) => {
     if (!canRevokeObjectUrl || typeof url !== 'string') return;
@@ -439,11 +534,11 @@ window.__SNIPBOARD_STATE__ = state;
                   event.dataTransfer.items.add(fileObj);
                 }
               } catch (err) {
-                console.warn('[SnipBoard] drag image blob failed', err);
+                console.warn('Drag image blob failed', err);
               }
             }
           } catch (err) {
-            console.warn('[SnipBoard] screenshot dragstart failed', err);
+            console.warn('Screenshot dragstart failed', err);
           }
         }
         thumb.classList.add('screenshot-thumb--dragging');
@@ -692,7 +787,7 @@ window.__SNIPBOARD_STATE__ = state;
         }
         refreshClipThumbnails();
       } catch (err) {
-        console.error('[SnipBoard] screenshot edit save failed', err);
+        console.error('Screenshot edit save failed', err);
         window.SnipToast?.show?.('Failed to save screenshot');
       } finally {
         close();
@@ -720,6 +815,21 @@ window.__SNIPBOARD_STATE__ = state;
     return screenshotEditor;
   }
 
+  const getEditorPaneWidth = () => {
+    const target = editorRoot || document.getElementById('editor');
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      if (rect.width) return rect.width;
+    }
+    const appRoot = document.getElementById('app');
+    if (appRoot && typeof window.getComputedStyle === 'function') {
+      const raw = window.getComputedStyle(appRoot).getPropertyValue('--editor-pane-width');
+      const parsed = Number.parseFloat(raw);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return 420;
+  };
+
     async function openScreenshotEditor(filename) {
       if (!filename) return;
       const editor = ensureScreenshotEditor();
@@ -734,9 +844,10 @@ window.__SNIPBOARD_STATE__ = state;
       const dpr = window.devicePixelRatio || 1;
       const width = img.naturalWidth || img.width || 800;
       const height = img.naturalHeight || img.height || 600;
+      const maxCanvasWidth = getEditorPaneWidth();
       editor.canvas.width = width * dpr;
       editor.canvas.height = height * dpr;
-      editor.canvas.style.width = `${Math.min(width, window.innerWidth - 80)}px`;
+      editor.canvas.style.width = `${Math.min(width, maxCanvasWidth)}px`;
       editor.canvas.style.height = `${Math.min(height, window.innerHeight - 160)}px`;
       editor.ctx.setTransform(1, 0, 0, 1, 0, 0);
       editor.ctx.clearRect(0, 0, editor.canvas.width, editor.canvas.height);
@@ -779,7 +890,7 @@ window.__SNIPBOARD_STATE__ = state;
   };
 
   async function renderClipThumbnails() {
-    if (!clipList) return;
+    if (!clipList || !clipList.isConnected) return;
     const rows = clipList.querySelectorAll('.clip-row');
     for (const row of rows) {
       if (!isRowVisible(row, clipList)) continue;
@@ -820,6 +931,25 @@ window.__SNIPBOARD_STATE__ = state;
       container.appendChild(img);
     }
   }
+
+  const updateResponsiveLayout = () => {
+    const appRoot = document.getElementById('app');
+    if (!appRoot) return;
+    const layoutMode = resolveLayoutMode();
+    const windowMode = resolveWindowMode();
+    appRoot.dataset.layoutMode = layoutMode;
+    appRoot.classList.toggle('is-narrow', layoutMode === 'launcher');
+    appRoot.classList.toggle('is-medium', layoutMode === 'work');
+    appRoot.classList.toggle('is-wide', layoutMode === 'review');
+    applyWindowModeLayout(windowMode);
+    if (windowMode && windowMode !== lastWindowMode) {
+      lastWindowMode = windowMode;
+      if (typeof api.requestWindowMode === 'function') {
+        void api.requestWindowMode(windowMode);
+      }
+    }
+  };
+
 
   function getActiveSectionId() {
     const candidate = state.activeTabId || state.currentSectionId || 'all';
@@ -864,6 +994,7 @@ window.__SNIPBOARD_STATE__ = state;
   function refreshSections() {
     syncSectionsFromTabs();
     tabsApi?.renderTabs?.();
+    tabsApi?.updateTabCounts?.();
     updateActiveSectionLabel();
     refreshSectionSelect();
   }
@@ -871,6 +1002,7 @@ window.__SNIPBOARD_STATE__ = state;
   function refreshClipList() {
     const prev = new Map((state.clips || []).map((c) => [c.id, c]));
     clipsApi?.renderClipList?.();
+    tabsApi?.updateTabCounts?.();
     // Preserve screenshots on any new clip instances added by renderClipList.
     state.clips = (state.clips || []).map((clip) => {
       if (Array.isArray(clip.screenshots)) return clip;
@@ -895,6 +1027,7 @@ window.__SNIPBOARD_STATE__ = state;
       editorApi?.loadClipIntoEditor?.(null);
       if (screenshotBox) screenshotBox.innerHTML = '';
       updateEditorControls();
+      updateResponsiveLayout();
       return;
     }
     ensureCurrentClipSection(clip);
@@ -931,6 +1064,7 @@ window.__SNIPBOARD_STATE__ = state;
       await renderEditorScreenshots(clip);
     }
     updateEditorControls();
+    updateResponsiveLayout();
   }
 
   async function handleAddScreenshot() {
@@ -969,7 +1103,7 @@ window.__SNIPBOARD_STATE__ = state;
       manualClipSelection = true;
       await refreshFull(clip.id);
     } catch (err) {
-      console.error('[SnipBoard] add screenshot failed', err);
+      console.error('Add screenshot failed', err);
       window.SnipToast?.show?.('Failed to add screenshot');
     }
   }
@@ -990,7 +1124,7 @@ window.__SNIPBOARD_STATE__ = state;
         if (typeof value === 'string') return sanitizeExternalText(value);
       }
     } catch (err) {
-      console.warn('[SnipBoard] Clipboard read via IPC failed', err);
+      console.warn('Clipboard read via IPC failed', err);
     }
     try {
       if (navigator?.clipboard?.readText) {
@@ -998,7 +1132,7 @@ window.__SNIPBOARD_STATE__ = state;
         if (typeof value === 'string') return sanitizeExternalText(value);
       }
     } catch (err) {
-      console.warn('[SnipBoard] Clipboard read via navigator failed', err);
+      console.warn('Clipboard read via navigator failed', err);
     }
     return '';
   };
@@ -1022,7 +1156,7 @@ window.__SNIPBOARD_STATE__ = state;
       if (!clipId) return;
       await refreshFull(clipId);
     } catch (err) {
-      console.error('[SnipBoard] createNewClip failed', err);
+      console.error('Create new clip failed', err);
     }
   }
 
@@ -1100,7 +1234,7 @@ window.__SNIPBOARD_STATE__ = state;
           void refreshEditor();
         })
         .catch((err) => {
-          console.error('[SnipBoard] persistClipAppearance failed', err);
+          console.error('Persist clip appearance failed', err);
           window.SnipToast?.show?.('Failed to save appearance');
         });
     }
@@ -1114,7 +1248,7 @@ window.__SNIPBOARD_STATE__ = state;
         refreshClipList();
       })
       .catch((err) => {
-        console.error('[SnipBoard] persistClipAppearance failed', err);
+        console.error('Persist clip appearance failed', err);
         window.SnipToast?.show?.('Failed to save appearance');
       });
   }
@@ -1132,7 +1266,7 @@ window.__SNIPBOARD_STATE__ = state;
       };
       await safeChannel?.(CHANNELS.SAVE_TABS, payload);
     } catch (err) {
-      console.warn('[SnipBoard] scheduleSaveTabsConfig failed', err);
+      console.warn('Schedule save tabs config failed', err);
     }
   };
 
@@ -1203,6 +1337,7 @@ window.__SNIPBOARD_STATE__ = state;
     clearScreenshotUrlCache();
     missingScreenshotSet.clear();
     manualClipSelection = false;
+    state.currentClipId = null;
     state.activeTabId = tab?.id || 'all';
     state.currentSectionId = state.activeTabId;
     refreshSections();
@@ -1215,14 +1350,10 @@ window.__SNIPBOARD_STATE__ = state;
   clipsApi?.onClipSelected?.((clip, meta = {}) => {
     clearScreenshotUrlCache();
     manualClipSelection = true;
-    const isMulti = Boolean(meta?.multi);
-    if (!isMulti) {
-      state.currentClipId = clip?.id || null;
-      refreshClipList();
-      void refreshEditor();
-      return;
-    }
+    void meta;
+    state.currentClipId = clip?.id || null;
     refreshClipList();
+    void refreshEditor();
   });
 
   const computeSignature = (clips = []) =>
@@ -1308,7 +1439,7 @@ window.__SNIPBOARD_STATE__ = state;
             tabs: sanitizedTabs.tabs,
             activeTabId: sanitizedTabs.activeTabId,
           }).catch((err) => {
-            console.warn('[SnipBoard] Failed to save sanitized tabs', err);
+            console.warn('Failed to save sanitized tabs', err);
           });
         }
         const nextSignature = computeSignature(data?.clips || []);
@@ -1328,7 +1459,7 @@ window.__SNIPBOARD_STATE__ = state;
         }
         renderAll();
       } catch (err) {
-        console.warn('[SnipBoard] refreshFull failed', err);
+        console.warn('Refresh full failed', err);
       } finally {
         updateEditorControls();
       }
@@ -1371,7 +1502,7 @@ window.__SNIPBOARD_STATE__ = state;
       }
       refreshClipList();
     } catch (err) {
-      console.warn('[SnipBoard] refreshClip failed', err);
+      console.warn('Refresh clip failed', err);
     }
   }
 
@@ -1392,7 +1523,7 @@ window.__SNIPBOARD_STATE__ = state;
           tabs: sanitizedTabs.tabs,
           activeTabId: sanitizedTabs.activeTabId,
         }).catch((err) => {
-          console.warn('[SnipBoard] Failed to save sanitized tabs', err);
+          console.warn('Failed to save sanitized tabs', err);
         });
       }
       state.tabs = sanitizedTabs.tabs;
@@ -1400,7 +1531,7 @@ window.__SNIPBOARD_STATE__ = state;
       refreshSections();
       refreshClipList();
     } catch (err) {
-      console.warn('[SnipBoard] refreshSections failed', err);
+      console.warn('Refresh sections failed', err);
     }
   }
 
@@ -1475,7 +1606,7 @@ window.__SNIPBOARD_STATE__ = state;
         pollDelayMs = Math.min(POLL_MAX_MS, Math.round(pollDelayMs * 1.5));
       }
     } catch (err) {
-      console.warn('[SnipBoard] poll failed', err);
+      console.warn('Poll failed', err);
       pollDelayMs = Math.min(POLL_MAX_MS, Math.round(pollDelayMs * 1.5));
     } finally {
       if (!pollPaused) schedulePoll();
@@ -1618,10 +1749,13 @@ window.__SNIPBOARD_STATE__ = state;
   };
 
   const init = async () => {
+    updateResponsiveLayout();
     await refreshFull();
     bindToolbar();
     bindFilters();
     bindThumbnailLazyLoad();
+    updateResponsiveLayout();
+    window.addEventListener('resize', updateResponsiveLayout);
     editorApi?.bindEditorEvents?.();
     pollBackend();
   };

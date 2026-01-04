@@ -90,7 +90,7 @@
         try {
           cb(clip, meta);
         } catch (err) {
-          console.warn('[SnipClips] onClipSelected handler failed', err);
+          console.warn('Clip selection handler failed', err);
         }
       });
     };
@@ -150,7 +150,7 @@
         }
         triggerGlobalRefresh();
       } catch (err) {
-        console.error('[SnipClips] persistClip failed', err);
+        console.error('Persist clip failed', err);
       }
     };
 
@@ -184,7 +184,7 @@
         callRefreshEditor();
         triggerGlobalRefresh();
       } catch (err) {
-        console.error('[SnipClips] deleteClip failed', err);
+        console.error('Delete clip failed', err);
       }
     };
 
@@ -263,9 +263,205 @@
       }
     };
 
+    const getClipListMode = () => {
+      const appRoot = doc ? doc.getElementById('app') : null;
+      if (appRoot?.classList.contains('is-narrow')) return 'narrow';
+      if (appRoot?.classList.contains('is-wide')) return 'medium';
+      if (appRoot?.classList.contains('is-medium')) return 'medium';
+      const width = global.innerWidth || doc?.documentElement?.clientWidth || 0;
+      if (width < 640) return 'narrow';
+      if (width >= 960) return 'medium';
+      return 'medium';
+    };
+
+    const applyClipRowState = (row, clip) => {
+      if (!row || !clip) return;
+      if (clip.color) {
+        row.classList.add('clip-row--colored', 'has-user-color');
+        row.style.setProperty('--clip-accent', clip.color);
+        row.style.setProperty('--appearanceColor', clip.color);
+      }
+      const isCurrent = clip.id === app.currentClipId;
+      const isSelected = getSelectedClipIds().has(clip.id);
+      if (isCurrent || isSelected) {
+        row.classList.add('selected');
+      }
+      if (isCurrent) {
+        row.classList.add('clip-row--active', 'active');
+      }
+      if (isSelected) {
+        row.classList.add('clip-row--selected');
+      }
+    };
+
+    const createMetaIndicator = (clip) => {
+      if (!doc || !clip) return null;
+      const notesLength = String(clip.notes || '').trim().length;
+      if (!notesLength) return null;
+      const meta = doc.createElement('span');
+      meta.className = 'clip-row__meta';
+      meta.textContent = '.';
+      return meta;
+    };
+
+    const bindClipRowEvents = (row, clip, onDrop) => {
+      row.addEventListener('click', (event) => {
+        const isMulti = Boolean(event?.metaKey || event?.ctrlKey);
+        if (isMulti) {
+          toggleSelectedClipId(clip.id);
+        } else {
+          clearSelectedClipIds();
+        }
+        notifySelection(clip, { multi: isMulti });
+      });
+
+      row.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showClipContextMenu(clip, event.clientX, event.clientY);
+      });
+
+      row.addEventListener('dragstart', (event) => {
+        dragSourceId = clip.id;
+        if (typeof DataTransfer !== 'undefined' && event?.dataTransfer) {
+          try {
+            event.dataTransfer.setData('application/x-snipboard-clip-id', clip.id);
+            event.dataTransfer.setData('text/plain', clip.text || '');
+            const safeTitle = clip.title || 'Clip';
+            const safeBody = (clip.text || '').replace(/\n/g, '<br/>');
+            event.dataTransfer.setData(
+              'text/html',
+              `<strong>${safeTitle}</strong><br/>${safeBody}`
+            );
+            event.dataTransfer.effectAllowed = 'copyMove';
+          } catch {
+            // ignore if dataTransfer is unavailable
+          }
+        }
+        row.classList.add('clip-row--dragging');
+      });
+
+      row.addEventListener('dragend', () => {
+        dragSourceId = null;
+        row.classList.remove('clip-row--dragging');
+      });
+
+      row.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        row.classList.add('clip-row--drop-target');
+      });
+
+      row.addEventListener('dragleave', () => {
+        row.classList.remove('clip-row--drop-target');
+      });
+
+      row.addEventListener('drop', (event) => {
+        event.preventDefault();
+        if (dragSourceId && dragSourceId !== clip.id) {
+          reorderClips(dragSourceId, clip.id);
+        }
+        row.classList.remove('clip-row--drop-target');
+        if (typeof onDrop === 'function') {
+          onDrop();
+        }
+      });
+    };
+
+    const ClipListItem = (clip, mode) => {
+      if (!doc || !clip) return null;
+      const row = doc.createElement('div');
+      row.className = 'clip-row clip-list-item';
+      row.dataset.clipId = clip.id;
+      row.draggable = true;
+      applyClipRowState(row, clip);
+
+      if (mode === 'medium') {
+        const colorStrip = doc.createElement('div');
+        colorStrip.className = 'clip-color-strip';
+        row.appendChild(colorStrip);
+      }
+
+      const main = doc.createElement('div');
+      main.className = 'clip-row__main';
+
+      const title = doc.createElement('div');
+      title.className = 'clip-row__title';
+      title.textContent = clip.title || '(Untitled)';
+      main.appendChild(title);
+
+      if (mode === 'medium') {
+        const meta = createMetaIndicator(clip);
+        if (meta) main.appendChild(meta);
+      }
+
+      row.appendChild(main);
+
+      const thumbWrap = doc.createElement('div');
+      thumbWrap.className = 'clip-row__thumb-wrap';
+
+      const thumb = doc.createElement('div');
+      const shots = Array.isArray(clip.screenshots)
+        ? clip.screenshots.filter((name) => typeof name === 'string' && name.trim().length > 0)
+        : [];
+      const shotCount = shots.length;
+      thumb.className = 'clip-row__thumb';
+      if (!shotCount) {
+        thumb.classList.add('clip-row__thumb--empty');
+      }
+      thumbWrap.appendChild(thumb);
+
+      if (shotCount > 1) {
+        const badge = doc.createElement('span');
+        badge.className = 'clip-row__thumb-badge';
+        badge.textContent = String(shotCount);
+        thumbWrap.appendChild(badge);
+      }
+
+      row.appendChild(thumbWrap);
+
+      bindClipRowEvents(row, clip, renderClipList);
+      return row;
+    };
+
+    const ClipCardItem = (clip) => {
+      if (!doc || !clip) return null;
+      const row = doc.createElement('div');
+      row.className = 'clip-row clip-card';
+      row.dataset.clipId = clip.id;
+      row.draggable = true;
+      applyClipRowState(row, clip);
+
+      const title = doc.createElement('div');
+      title.className = 'clip-card__title';
+      title.textContent = clip.title || '(Untitled)';
+      row.appendChild(title);
+
+      const hasScreenshot =
+        Array.isArray(clip.screenshots) && clip.screenshots.length > 0;
+      if (hasScreenshot) {
+        const thumbContainer = doc.createElement('div');
+        thumbContainer.className = 'clip-row__thumb clip-card__thumb';
+        row.appendChild(thumbContainer);
+      }
+
+      const notesText = String(clip.notes || '').trim();
+      if (notesText) {
+        const notes = doc.createElement('div');
+        notes.className = 'clip-card__notes';
+        notes.textContent = notesText;
+        row.appendChild(notes);
+      }
+
+      bindClipRowEvents(row, clip, renderClipList);
+      return row;
+    };
+
     const renderClipList = () => {
       if (!clipListEl) return;
       clipListEl.innerHTML = '';
+      const viewMode = getClipListMode();
+      clipListEl.classList.remove('clip-list--narrow', 'clip-list--medium', 'clip-list--wide');
+      clipListEl.classList.add(`clip-list--${viewMode}`);
       const activeSectionId = getActiveSectionId();
       const activeTab =
         Array.isArray(app.tabs) && activeSectionId && activeSectionId !== 'all'
@@ -336,103 +532,13 @@
         return defaultOrderSort(filtered);
       })();
 
+      const renderItem =
+        viewMode === 'wide'
+          ? (clip) => ClipCardItem(clip)
+          : (clip) => ClipListItem(clip, viewMode);
       sortedClips.forEach((clip) => {
-        if (!doc) return;
-        const row = doc.createElement('div');
-        row.className = 'clip-row';
-        row.dataset.clipId = clip.id;
-        row.draggable = true;
-        if (clip.color) {
-          row.classList.add('clip-row--colored', 'has-user-color');
-          row.style.setProperty('--clip-accent', clip.color);
-          row.style.setProperty('--appearanceColor', clip.color);
-          const colorStrip = doc.createElement('div');
-          colorStrip.className = 'clip-color-strip';
-          colorStrip.style.backgroundColor = clip.color;
-          row.appendChild(colorStrip);
-        }
-
-        if (clip.id === app.currentClipId) {
-          row.classList.add('clip-row--active', 'active');
-        }
-        if (getSelectedClipIds().has(clip.id)) {
-          row.classList.add('clip-row--selected');
-        }
-
-        const iconEl = createClipIconElement(clip);
-        if (iconEl) {
-          row.appendChild(iconEl);
-        }
-
-        const thumbContainer = doc.createElement('div');
-        thumbContainer.className = 'clip-row__thumb';
-        row.appendChild(thumbContainer);
-
-        const title = doc.createElement('div');
-        title.className = 'clip-row__title';
-        title.textContent = clip.title || '(Untitled)';
-        row.appendChild(title);
-
-        row.addEventListener('click', (event) => {
-          const isMulti = Boolean(event?.metaKey || event?.ctrlKey);
-          if (isMulti) {
-            toggleSelectedClipId(clip.id);
-          } else {
-            clearSelectedClipIds();
-          }
-          notifySelection(clip, { multi: isMulti });
-        });
-
-        row.addEventListener('contextmenu', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          showClipContextMenu(clip, event.clientX, event.clientY);
-        });
-
-        row.addEventListener('dragstart', (event) => {
-          dragSourceId = clip.id;
-          if (typeof DataTransfer !== 'undefined' && event?.dataTransfer) {
-            try {
-              event.dataTransfer.setData('application/x-snipboard-clip-id', clip.id);
-              event.dataTransfer.setData('text/plain', clip.text || '');
-              const safeTitle = clip.title || 'Clip';
-              const safeBody = (clip.text || '').replace(/\n/g, '<br/>');
-              event.dataTransfer.setData(
-                'text/html',
-                `<strong>${safeTitle}</strong><br/>${safeBody}`
-              );
-              event.dataTransfer.effectAllowed = 'copyMove';
-            } catch {
-              // ignore if dataTransfer is unavailable
-            }
-          }
-          row.classList.add('clip-row--dragging');
-        });
-
-        row.addEventListener('dragend', () => {
-          dragSourceId = null;
-          row.classList.remove('clip-row--dragging');
-        });
-
-        row.addEventListener('dragover', (event) => {
-          event.preventDefault();
-          row.classList.add('clip-row--drop-target');
-        });
-
-        row.addEventListener('dragleave', () => {
-          row.classList.remove('clip-row--drop-target');
-        });
-
-        row.addEventListener('drop', (event) => {
-          event.preventDefault();
-          if (dragSourceId && dragSourceId !== clip.id) {
-            reorderClips(dragSourceId, clip.id);
-          }
-          row.classList.remove('clip-row--drop-target');
-          renderClipList();
-        });
-
-        clipListEl.appendChild(row);
+        const row = renderItem(clip);
+        if (row) clipListEl.appendChild(row);
       });
 
       const rendererApi = getRendererApi();

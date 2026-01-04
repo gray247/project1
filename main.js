@@ -108,7 +108,9 @@ const PACKAGED_SCRIPT = `
       if (actionKey === "window:close") {
         try {
           console.log("PACKAGED_CONTROL_CLOSE_CLICKED");
-        } catch {}
+        } catch (err) {
+          void err;
+        }
       }
     });
 
@@ -138,8 +140,10 @@ const PACKAGED_SCRIPT = `
       if (!body || body.dataset.packagedOverlapWarned) return;
       body.dataset.packagedOverlapWarned = "true";
       try {
-        console.warn("[SnipBoard] Drag bar overlap detected", details);
-      } catch {}
+        console.warn("Drag bar overlap detected", details);
+      } catch (err) {
+        void err;
+      }
     };
 
     const checkOverlap = () => {
@@ -180,10 +184,10 @@ function migrateLegacyBaseDir() {
     if (legacyExists && !newExists) {
       ensureDir(path.dirname(BASE_DATA_DIR));
       fs.cpSync(LEGACY_BASE_DATA_DIR, BASE_DATA_DIR, { recursive: true, errorOnExist: false });
-      console.log(`[SnipBoard] Migrated data from legacy path to ${BASE_DATA_DIR}`);
+      console.log(`Migrated data from legacy path to ${BASE_DATA_DIR}`);
     }
   } catch (err) {
-    console.warn("[SnipBoard] Legacy data migration failed:", err);
+    console.warn("Legacy data migration failed:", err);
   }
 }
 
@@ -198,7 +202,7 @@ function getBridgeToken() {
     fs.writeFileSync(TOKEN_FILE, token, "utf8");
     return token;
   } catch (err) {
-    console.error("[SnipBoard] Failed to initialize bridge token:", err);
+    console.error("Failed to initialize bridge token:", err);
     // Fallback to an in-memory token to avoid crashing; regenerated each run on failure.
     return crypto.randomBytes(32).toString("hex");
   }
@@ -227,7 +231,7 @@ function migrateDataFiles() {
         fs.renameSync(entry.from, entry.to);
       }
     } catch (err) {
-      console.warn("[SnipBoard] Migration move failed:", entry.from, err);
+      console.warn("Migration move failed:", entry.from, err);
     }
   }
 
@@ -236,7 +240,7 @@ function migrateDataFiles() {
     try {
       fs.renameSync(oldShotsDir, SCREENSHOTS_DIR);
     } catch (err) {
-      console.warn("[SnipBoard] Migration screenshots move failed:", err);
+      console.warn("Migration screenshots move failed:", err);
     }
   }
 }
@@ -248,7 +252,7 @@ function ensureDir(dir) {
     }
     return true;
   } catch (err) {
-    console.error("[SnipBoard] Failed to ensure directory:", dir, err);
+    console.error("Failed to ensure directory:", dir, err);
     return false;
   }
 }
@@ -275,7 +279,7 @@ function readJson(file, fallback) {
     if (!raw.trim()) return fallback;
     return JSON.parse(raw);
   } catch (err) {
-    console.error("[SnipBoard] Failed to read JSON", file, err);
+    console.error("Failed to read JSON", file, err);
     return fallback;
   }
 }
@@ -285,7 +289,7 @@ function writeJson(file, data) {
     ensureDir(path.dirname(file));
     fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
   } catch (err) {
-    console.error("[SnipBoard] Failed to write JSON", file, err);
+    console.error("Failed to write JSON", file, err);
   }
 }
 
@@ -391,7 +395,7 @@ async function mirrorClipToExport(clip, sections) {
     if (!clip || !clip.sectionId) return;
     const exportInfo = resolveClipFilename(clip, sections, clip.exportFilename);
     if (!exportInfo || !exportInfo.filePath) {
-      console.log(`[SnipBoard] Export folder not set for section "${clip.sectionId}", skipping mirror.`);
+      console.log(`Export folder not set for section "${clip.sectionId}", skipping mirror.`);
       return;
     }
     const filePath = exportInfo.filePath;
@@ -416,9 +420,9 @@ async function mirrorClipToExport(clip, sections) {
         : legacyColor,
     };
     await fs.promises.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
-    console.log(`[SnipBoard] Mirrored clip ${clip.id} to ${filePath}`);
+    console.log(`Mirrored clip ${clip.id} to ${filePath}`);
   } catch (err) {
-    console.error("[SnipBoard] Failed to mirror clip to export folder:", err);
+    console.error("Failed to mirror clip to export folder:", err);
   }
 }
 
@@ -461,7 +465,7 @@ async function persistClip(incomingClip, options = {}) {
       try {
         fs.unlinkSync(oldPath);
       } catch (err) {
-        console.warn("[SnipBoard] Failed to remove old clip export file:", err);
+        console.warn("Failed to remove old clip export file:", err);
       }
     }
   }
@@ -653,7 +657,7 @@ async function handleHttpRequest(req, res) {
         servePath = legacyResolved;
       } else {
         if (!missingServedScreenshots.has(normalized)) {
-          console.warn("[SnipBoard] Screenshot not found:", normalized);
+          console.warn("Screenshot not found:", normalized);
           missingServedScreenshots.add(normalized);
         }
         res.writeHead(404);
@@ -667,7 +671,7 @@ async function handleHttpRequest(req, res) {
     return;
   }
   if (isAddClipPost) {
-    console.log("[SnipBoard http] POST /add-clip");
+    console.log("HTTP POST /add-clip");
   }
   if (req.method === "OPTIONS") {
     res.writeHead(200);
@@ -705,7 +709,7 @@ async function handleHttpRequest(req, res) {
     sendJsonResponse(res, 200, { ok: true, clip: saved });
   } catch (err) {
     const status = err.statusCode || 500;
-    console.error("[SnipBoard http]", err);
+    console.error("HTTP request error:", err);
     sendJsonResponse(res, status, {
       ok: false,
       error: err.message || "Unexpected error",
@@ -721,20 +725,20 @@ function startHttpBridge() {
   });
 
   httpServer.on("error", (err) => {
-    console.error("[SnipBoard http] Server error:", err);
+    console.error("HTTP server error:", err);
   });
 
   httpServer.once("error", (err) => {
     if (err.code === "EADDRINUSE") {
-      console.error(`[SnipBoard http] Port ${HTTP_PORT} already in use; HTTP bridge not started.`);
+      console.error(`HTTP port ${HTTP_PORT} already in use; bridge not started.`);
     } else {
-      console.error("[SnipBoard http] Failed to start server:", err);
+      console.error("Failed to start HTTP server:", err);
     }
     httpServer = null;
   });
 
   httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
-    console.log(`[SnipBoard http] Listening on http://${HTTP_HOST}:${HTTP_PORT}`);
+    console.log(`HTTP listening on http://${HTTP_HOST}:${HTTP_PORT}`);
   });
 }
 
@@ -743,13 +747,129 @@ function stopHttpBridge() {
 
   httpServer.close((err) => {
     if (err) {
-      console.error("[SnipBoard http] Failed to stop server:", err);
+      console.error("Failed to stop HTTP server:", err);
     } else {
-      console.log("[SnipBoard http] Server stopped");
+      console.log("HTTP server stopped");
     }
   });
   httpServer = null;
 }
+
+const WINDOW_MODES = Object.freeze({
+  FULL: "full",
+  WRITING: "writing",
+  TABS: "tabs",
+  MINIMIZED: "minimized",
+});
+
+const WINDOW_CONSTRAINTS = {
+  [WINDOW_MODES.FULL]: { minW: 900, maxW: null, minH: 700, maxH: null },
+  [WINDOW_MODES.WRITING]: { minW: 700, maxW: null, minH: 600, maxH: null },
+  [WINDOW_MODES.TABS]: { minW: 260, maxW: 360, minH: 300, maxH: 600 },
+  [WINDOW_MODES.MINIMIZED]: { minW: 220, maxW: 260, minH: 120, maxH: 200 },
+};
+
+const resolveWindowMode = (value) => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return Object.values(WINDOW_MODES).includes(normalized) ? normalized : null;  
+};
+
+const resolveWindowConstraints = (mode) =>
+  WINDOW_CONSTRAINTS[mode] || WINDOW_CONSTRAINTS[WINDOW_MODES.MINIMIZED];
+
+const normalizeConstraint = (minValue, maxValue, limit) => {
+  const min = Math.max(1, Number.isFinite(minValue) ? minValue : 1);
+  const rawMax = Number.isFinite(maxValue) ? maxValue : limit;
+  const max = Math.max(min, Math.min(rawMax, limit));
+  return { min, max };
+};
+
+const clampDimension = (value, min, max) =>
+  Math.min(Math.max(value, min), max);
+
+const clampBoundsToMode = (bounds, mode) => {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const constraints = resolveWindowConstraints(mode);
+  const widthLimits = normalizeConstraint(
+    constraints.minW,
+    constraints.maxW,
+    workArea.width
+  );
+  const heightLimits = normalizeConstraint(
+    constraints.minH,
+    constraints.maxH,
+    workArea.height
+  );
+  const baseWidth = Number.isFinite(bounds?.width)
+    ? bounds.width
+    : workArea.width;
+  const baseHeight = Number.isFinite(bounds?.height)
+    ? bounds.height
+    : workArea.height;
+  const width = clampDimension(baseWidth, widthLimits.min, widthLimits.max);
+  const height = clampDimension(baseHeight, heightLimits.min, heightLimits.max);
+  return { width, height };
+};
+
+const getWindowModeBounds = (mode, baseBounds = null) => {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const base = baseBounds || workArea;
+  const { width, height } = clampBoundsToMode(base, mode);
+  const rightEdge = workArea.x + workArea.width;
+  const x = Math.max(workArea.x, rightEdge - width);
+  const y = workArea.y;
+  return { x, y, width, height };
+};
+
+const applyWindowConstraints = (win, mode) => {
+  if (!win) return;
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const constraints = resolveWindowConstraints(mode);
+  const widthLimits = normalizeConstraint(
+    constraints.minW,
+    constraints.maxW,
+    workArea.width
+  );
+  const heightLimits = normalizeConstraint(
+    constraints.minH,
+    constraints.maxH,
+    workArea.height
+  );
+  win.setMinimumSize(widthLimits.min, heightLimits.min);
+  win.setMaximumSize(widthLimits.max, heightLimits.max);
+};
+
+const applyWindowMode = (win, mode) => {
+  if (!win) return null;
+  const resolvedMode = resolveWindowMode(mode) || WINDOW_MODES.MINIMIZED;       
+  applyWindowConstraints(win, resolvedMode);
+  const bounds = getWindowModeBounds(resolvedMode, win.getBounds());
+  isApplyingWindowBounds = true;
+  try {
+    win.setBounds(bounds, false);
+  } finally {
+    isApplyingWindowBounds = false;
+  }
+  return resolvedMode;
+};
+
+let currentWindowMode = WINDOW_MODES.TABS;
+let isApplyingWindowBounds = false;
+
+const clampWindowResize = (win) => {
+  if (!win || isApplyingWindowBounds) return;
+  const mode = currentWindowMode || WINDOW_MODES.MINIMIZED;
+  const currentBounds = win.getBounds();
+  const { width, height } = clampBoundsToMode(currentBounds, mode);
+  if (width === currentBounds.width && height === currentBounds.height) return;
+  isApplyingWindowBounds = true;
+  try {
+    win.setBounds({ ...currentBounds, width, height }, false);
+  } finally {
+    isApplyingWindowBounds = false;
+  }
+};
 
 function createWindow() {
   const isPackaged = app.isPackaged;
@@ -763,8 +883,8 @@ function createWindow() {
     });
   }
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    show: false,
+    resizable: true,
     ...(isPackaged
       ? {
           frame: false,
@@ -783,6 +903,10 @@ function createWindow() {
     },
   });
 
+  win.on("resize", () => clampWindowResize(win));
+
+  currentWindowMode = applyWindowMode(win, currentWindowMode);
+
   if (isPackaged) {
     win.setTitle("");
     win.webContents.once("did-finish-load", () => {
@@ -790,6 +914,10 @@ function createWindow() {
       win.webContents.executeJavaScript(PACKAGED_SCRIPT, true).catch(() => {});
     });
   }
+
+  win.once("ready-to-show", () => {
+    win.show();
+  });
 
   win.loadFile("index.html");
   return win;
@@ -820,11 +948,23 @@ ipcMain.handle("window:toggle-maximize", () => {
   return { ok: true, maximized: focused.isMaximized() };
 });
 
+ipcMain.handle("window:request-mode", (event, mode) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return { ok: false };
+  const resolvedMode = resolveWindowMode(mode);
+  if (!resolvedMode) return { ok: false };
+  if (resolvedMode === currentWindowMode) {
+    return { ok: true, mode: resolvedMode };
+  }
+  currentWindowMode = applyWindowMode(win, resolvedMode);
+  return { ok: true, mode: currentWindowMode };
+});
+
 app.whenReady().then(() => {
   ensureDir(DATA_DIR);
   ensureDir(SCREENSHOTS_DIR);
   migrateDataFiles();
-  console.log("[SnipBoard] Screenshots directory:", path.resolve(SCREENSHOTS_DIR));
+  console.log("Screenshots directory:", path.resolve(SCREENSHOTS_DIR));
   createWindow();
   startHttpBridge();
 
@@ -854,7 +994,7 @@ ipcMain.handle("get-data", async () => {
     const { sections, clips } = loadData();
     return { sections, clips };
   } catch (err) {
-    console.error("[SnipBoard] get-data failed:", err);
+    console.error("get-data failed:", err);
     return { sections: [], clips: [] };
   }
 });
@@ -863,7 +1003,7 @@ ipcMain.handle("save-clip", async (_event, incomingClip, options = {}) => {
   try {
     return await persistClip(incomingClip, options);
   } catch (err) {
-    console.error("[SnipBoard] save-clip failed:", err);
+    console.error("save-clip failed:", err);
     throw err;
   }
 });
@@ -872,7 +1012,7 @@ ipcMain.handle("delete-clip", async (_event, id) => {
   try {
     return deleteClipById(id);
   } catch (err) {
-    console.error("[SnipBoard] delete-clip failed:", err);
+    console.error("delete-clip failed:", err);
     throw err;
   }
 });
@@ -881,7 +1021,7 @@ ipcMain.handle("delete-clips", async (_event, ids) => {
   try {
     return deleteClipsByIds(ids);
   } catch (err) {
-    console.error("[SnipBoard] delete-clips failed:", err);
+    console.error("delete-clips failed:", err);
     throw err;
   }
 });
@@ -935,7 +1075,7 @@ ipcMain.handle("delete-section", async (_event, id) => {
   try {
     return deleteSectionById(id);
   } catch (err) {
-    console.error("[SnipBoard] delete-section failed:", err);
+    console.error("delete-section failed:", err);
     throw err;
   }
 });
@@ -999,7 +1139,7 @@ ipcMain.handle("get-clipboard-text", async () => {
   try {
     return clipboard.readText() || "";
   } catch (err) {
-    console.error("[SnipBoard] Failed to read clipboard:", err);
+    console.error("Failed to read clipboard:", err);
     return "";
   }
 });
@@ -1051,7 +1191,7 @@ ipcMain.handle("save-screenshot", async (_event, payload) => {
 
     return results;
   } catch (err) {
-    console.error("[SnipBoard] save-screenshot failed:", err);
+    console.error("save-screenshot failed:", err);
     throw err;
   }
 });
@@ -1070,7 +1210,7 @@ ipcMain.handle("delete-screenshot", async (_event, payload) => {
       try {
         fs.unlinkSync(filePath);
       } catch (err) {
-        console.warn("[SnipBoard] Failed to delete screenshot file:", err);
+        console.warn("Failed to delete screenshot file:", err);
       }
     }
 
@@ -1079,7 +1219,7 @@ ipcMain.handle("delete-screenshot", async (_event, payload) => {
 
     return { success: true, clip: clipData[clipIdx] };
   } catch (err) {
-    console.error("[SnipBoard] delete-screenshot failed:", err);
+    console.error("delete-screenshot failed:", err);
     return { success: false, error: err.message };
   }
 });
@@ -1089,7 +1229,7 @@ ipcMain.handle("get-screenshot-url", async (_event, filename) => {
     const filePath = path.join(SCREENSHOTS_DIR, filename);
     return "file://" + filePath.replace(/\\/g, "/");
   } catch (err) {
-    console.error("[SnipBoard] get-screenshot-url failed:", err);
+    console.error("get-screenshot-url failed:", err);
     return "";
   }
 });
@@ -1101,7 +1241,7 @@ ipcMain.handle("check-screenshot-path", async (_event, filename) => {
     const exists = fs.existsSync(filePath);
     return { ok: true, exists, fullPath: filePath };
   } catch (err) {
-    console.error("[SnipBoard] check-screenshot-path failed:", err);
+    console.error("check-screenshot-path failed:", err);
     return { ok: false, exists: false, fullPath: "" };
   }
 });
@@ -1137,7 +1277,7 @@ ipcMain.handle("list-displays", async () => {
       };
     });
   } catch (err) {
-    console.error("[SnipBoard] list-displays failed:", err);
+    console.error("list-displays failed:", err);
     return [];
   }
 });
@@ -1158,7 +1298,7 @@ ipcMain.handle("debug-list-displays", async () => {
       hasThumb: !s.thumbnail.isEmpty(),
     }));
   } catch (err) {
-    console.error("[SnipBoard] debug-list-displays failed:", err);
+    console.error("debug-list-displays failed:", err);
     return [];
   }
 });
@@ -1176,12 +1316,12 @@ async function captureAllMonitors() {
   sources.forEach((source, index) => {
     const img = source.thumbnail;
     if (!img || img.isEmpty()) {
-      console.warn("[SnipBoard] Empty thumbnail for", source.id, source.name);
+      console.warn("Empty thumbnail for", source.id, source.name);
       return;
     }
     const buffer = img.toPNG();
     if (!buffer || buffer.length < 1000) {
-      console.warn("[SnipBoard] Tiny/invalid PNG for", source.id, source.name);
+      console.warn("Tiny/invalid PNG for", source.id, source.name);
       return;
     }
     captures.push({
@@ -1206,7 +1346,7 @@ async function saveAllMonitorScreenshots() {
     const fileName = `Monitor-${capture.index + 1}-${timestamp}.png`;
     const filePath = path.join(SCREENSHOTS_DIR, fileName);
     if (!capture.buffer || capture.buffer.length < 1000) {
-      console.warn("[SnipBoard] Ignoring empty capture for", capture.id);
+      console.warn("Ignoring empty capture for", capture.id);
       continue;
     }
     await fs.promises.writeFile(filePath, capture.buffer);
@@ -1218,7 +1358,7 @@ async function saveAllMonitorScreenshots() {
     });
   }
 
-  console.log("[SnipBoard] Multi-monitor capture:", {
+  console.log("Multi-monitor capture:", {
     requested: captures.length,
     saved: files.length,
     files: files.map(f => f.filename),
@@ -1239,7 +1379,7 @@ ipcMain.handle("capture-screen", async () => {
       })),
     };
   } catch (err) {
-    console.error("[SnipBoard] capture-screen failed:", err);
+    console.error("capture-screen failed:", err);
     throw err;
   }
 });
@@ -1276,7 +1416,7 @@ ipcMain.handle("open-url", async (_event, url) => {
     await shell.openExternal(safeUrl);
     return { success: true };
   } catch (err) {
-    console.error("[SnipBoard] open-url failed:", err);
+    console.error("open-url failed:", err);
     return { success: false, error: err?.message };
   }
 });

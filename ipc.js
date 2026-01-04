@@ -66,7 +66,7 @@
     try {
       return await invoke(channel, payload);
     } catch (err) {
-      console.error("[SnipBoard] IPC failure:", channel, err);
+      console.error("IPC failure:", channel, err);
       if (global.SnipToast?.error) {
         global.SnipToast.error("Operation failed. See console for details.");
       }

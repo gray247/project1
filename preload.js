@@ -16,6 +16,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "set-section-locked",
   "save-section-order",
   "delete-section",
+  "window:request-mode",
 ]);
 
 const ALLOWED_ON_CHANNELS = new Set([]);
@@ -26,7 +27,7 @@ const isAllowedChannel = (channel, allowlist) =>
 contextBridge.exposeInMainWorld("api", {
   invoke: (channel, args) => {
     if (!isAllowedChannel(channel, ALLOWED_INVOKE_CHANNELS)) {
-      console.warn(`[SnipBoard] Blocked IPC invoke: ${String(channel)}`);
+      console.warn(`Blocked IPC invoke: ${String(channel)}`);
       return Promise.reject(new Error("Blocked IPC channel"));
     }
     return ipcRenderer.invoke(channel, args);
@@ -52,7 +53,7 @@ contextBridge.exposeInMainWorld("api", {
   },
   on: (channel, listener) => {
     if (!isAllowedChannel(channel, ALLOWED_ON_CHANNELS)) {
-      console.warn(`[SnipBoard] Blocked IPC listener: ${String(channel)}`);
+      console.warn(`Blocked IPC listener: ${String(channel)}`);
       return;
     }
     if (typeof listener !== "function") return;
@@ -70,6 +71,7 @@ contextBridge.exposeInMainWorld("api", {
   deleteClips: (ids) => ipcRenderer.invoke("delete-clips", ids),
   getClipboardText: () => ipcRenderer.invoke("get-clipboard-text"),
   openUrl: (url) => ipcRenderer.invoke("open-url", url),
+  requestWindowMode: (mode) => ipcRenderer.invoke("window:request-mode", mode),
 });
 
 contextBridge.exposeInMainWorld("windowControls", {
