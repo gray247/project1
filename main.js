@@ -22,6 +22,7 @@ const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024; // 10 MB
 const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg"]);
 const TOKEN_HEADER_NAME = "x-snipboard-token";
 const missingServedScreenshots = new Set();
+let screenshotEditorWindow = null;
 
 const PACKAGED_CSS = `
   #packaged-title-bar {
@@ -759,8 +760,12 @@ const WINDOW_MODES = Object.freeze({
   FULL: "full",
   WRITING: "writing",
   TABS: "tabs",
+  QUARTER: "quarter",
   MINIMIZED: "minimized",
 });
+
+const QUARTER_MODE_WIDTH = 480;
+const QUARTER_MODE_HEIGHT_RATIO = 0.45;
 
 const WINDOW_CONSTRAINTS = {
   [WINDOW_MODES.FULL]: { minW: 900, maxW: null, minH: 700, maxH: null },
@@ -775,8 +780,23 @@ const resolveWindowMode = (value) => {
   return Object.values(WINDOW_MODES).includes(normalized) ? normalized : null;  
 };
 
-const resolveWindowConstraints = (mode) =>
-  WINDOW_CONSTRAINTS[mode] || WINDOW_CONSTRAINTS[WINDOW_MODES.MINIMIZED];
+const getQuarterConstraints = (workArea) => {
+  const area = workArea || screen.getPrimaryDisplay().workArea;
+  const width = Math.max(1, Math.min(QUARTER_MODE_WIDTH, area.width));
+  const height = Math.max(
+    1,
+    Math.ceil(area.height * QUARTER_MODE_HEIGHT_RATIO)
+  );
+  const clampedHeight = Math.min(height, area.height);
+  return { minW: width, maxW: width, minH: clampedHeight, maxH: clampedHeight };
+};
+
+const resolveWindowConstraints = (mode, workArea = null) => {
+  if (mode === WINDOW_MODES.QUARTER) {
+    return getQuarterConstraints(workArea);
+  }
+  return WINDOW_CONSTRAINTS[mode] || WINDOW_CONSTRAINTS[WINDOW_MODES.MINIMIZED];
+};
 
 const normalizeConstraint = (minValue, maxValue, limit) => {
   const min = Math.max(1, Number.isFinite(minValue) ? minValue : 1);
@@ -790,7 +810,7 @@ const clampDimension = (value, min, max) =>
 
 const clampBoundsToMode = (bounds, mode) => {
   const workArea = screen.getPrimaryDisplay().workArea;
-  const constraints = resolveWindowConstraints(mode);
+  const constraints = resolveWindowConstraints(mode, workArea);
   const widthLimits = normalizeConstraint(
     constraints.minW,
     constraints.maxW,
@@ -825,7 +845,7 @@ const getWindowModeBounds = (mode, baseBounds = null) => {
 const applyWindowConstraints = (win, mode) => {
   if (!win) return;
   const workArea = screen.getPrimaryDisplay().workArea;
-  const constraints = resolveWindowConstraints(mode);
+  const constraints = resolveWindowConstraints(mode, workArea);
   const widthLimits = normalizeConstraint(
     constraints.minW,
     constraints.maxW,
@@ -862,10 +882,16 @@ const clampWindowResize = (win) => {
   const mode = currentWindowMode || WINDOW_MODES.MINIMIZED;
   const currentBounds = win.getBounds();
   const { width, height } = clampBoundsToMode(currentBounds, mode);
-  if (width === currentBounds.width && height === currentBounds.height) return;
+  if (mode !== WINDOW_MODES.QUARTER && width === currentBounds.width && height === currentBounds.height) {
+    return;
+  }
+  let nextBounds = { ...currentBounds, width, height };
+  if (mode === WINDOW_MODES.QUARTER) {
+    nextBounds = getWindowModeBounds(mode, nextBounds);
+  }
   isApplyingWindowBounds = true;
   try {
-    win.setBounds({ ...currentBounds, width, height }, false);
+    win.setBounds(nextBounds, false);
   } finally {
     isApplyingWindowBounds = false;
   }
@@ -923,12 +949,40 @@ function createWindow() {
   return win;
 }
 
-ipcMain.handle("window:minimize", () => {
-  const focused = BrowserWindow.getFocusedWindow();
-  if (!focused) return { ok: false };
-  focused.minimize();
-  return { ok: true };
-});
+function openScreenshotEditorWindow(filename) {
+  if (!filename) return null;
+  if (screenshotEditorWindow && !screenshotEditorWindow.isDestroyed()) {
+    screenshotEditorWindow.webContents.send("screenshot-editor:open", filename);
+    screenshotEditorWindow.focus();
+    return screenshotEditorWindow;
+  }
+  const editorWindow = new BrowserWindow({
+    width: 1000,
+    height: 800,
+    minWidth: 360,
+    minHeight: 240,
+    resizable: true,
+    title: "Screenshot Editor",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      enableRemoteModule: false,
+    },
+  });
+  editorWindow.once("ready-to-show", () => {
+    editorWindow.show();
+  });
+  editorWindow.on("closed", () => {
+    screenshotEditorWindow = null;
+  });
+  editorWindow.loadFile("index.html", {
+    search: `?mode=screenshot-editor&file=${encodeURIComponent(filename)}`,
+  });
+  screenshotEditorWindow = editorWindow;
+  return editorWindow;
+}
 
 ipcMain.handle("window:close", () => {
   const focused = BrowserWindow.getFocusedWindow();
@@ -958,6 +1012,19 @@ ipcMain.handle("window:request-mode", (event, mode) => {
   }
   currentWindowMode = applyWindowMode(win, resolvedMode);
   return { ok: true, mode: currentWindowMode };
+});
+
+ipcMain.handle("screenshot-editor:open", (_event, filename) => {
+  openScreenshotEditorWindow(filename);
+  return { ok: true };
+});
+
+ipcMain.on("screenshot-editor:updated", (event, payload) => {
+  const filename = payload?.filename || payload;
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (win.webContents.id === event.sender.id) return;
+    win.webContents.send("screenshot-editor:updated", { filename });
+  });
 });
 
 app.whenReady().then(() => {

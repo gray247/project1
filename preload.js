@@ -17,9 +17,13 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "save-section-order",
   "delete-section",
   "window:request-mode",
+  "screenshot-editor:open",
 ]);
 
-const ALLOWED_ON_CHANNELS = new Set([]);
+const ALLOWED_ON_CHANNELS = new Set([
+  "screenshot-editor:open",
+  "screenshot-editor:updated",
+]);
 
 const isAllowedChannel = (channel, allowlist) =>
   typeof channel === "string" && allowlist.has(channel);
@@ -47,6 +51,7 @@ contextBridge.exposeInMainWorld("api", {
       "open-url",
       "delete-clips",
       "get-clipboard-text",
+      "screenshot-editor:updated",
     ]);
     if (typeof channel !== "string" || !allowedChannels.has(channel)) return;
     ipcRenderer.send(channel, args);
@@ -72,10 +77,12 @@ contextBridge.exposeInMainWorld("api", {
   getClipboardText: () => ipcRenderer.invoke("get-clipboard-text"),
   openUrl: (url) => ipcRenderer.invoke("open-url", url),
   requestWindowMode: (mode) => ipcRenderer.invoke("window:request-mode", mode),
+  openScreenshotEditor: (filename) =>
+    ipcRenderer.invoke("screenshot-editor:open", filename),
 });
 
 contextBridge.exposeInMainWorld("windowControls", {
-  minimize: () => ipcRenderer.invoke("window:minimize"),
+  minimize: () => ipcRenderer.invoke("window:request-mode", "minimized"),
   close: () => ipcRenderer.invoke("window:close"),
   toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
 });

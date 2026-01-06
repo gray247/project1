@@ -11,6 +11,10 @@
   <body>
     <div id="app">
       <aside id="tabsPane" class="tabs-pane">
+        <div class="tabs-search">
+          <label>Search</label>
+          <input id="searchInput" placeholder="Search..." />
+        </div>
         <div id="sectionTabs" class="section-tabs">
           <button id="addTabBtn" class="section-pill add-tab" title="Create new tab">+ Tab</button>
         </div>
@@ -40,45 +44,7 @@
               <button id="listAddBtn" class="pill sidebar-add-btn" title="New clip in current section">+</button>
             </div>
           </div>
-          <div class="list-header__row list-header__row--tools">
-            <div class="clip-pane-tools">
-              <div class="quick-tools" id="topbarTools">
-                <input id="searchInput" placeholder="Search..." />
-                <button id="sortToggleBtn" class="tool-btn">Sort</button>
-                <button id="filterToggleBtn" class="tool-btn">Filter</button>
-              </div>
-              <div id="sortMenu" class="tool-menu">
-                <div class="tool-menu__title">Sort</div>
-                <label class="tool-option">
-                  <input type="radio" name="sortMode" value="default" checked />
-                  Default order
-                </label>
-                <label class="tool-option">
-                  <input type="radio" name="sortMode" value="newest" />
-                  Newest first
-                </label>
-                <label class="tool-option">
-                  <input type="radio" name="sortMode" value="oldest" />
-                  Oldest first
-                </label>
-                <label class="tool-option">
-                  <input type="radio" name="sortMode" value="title" />
-                  Title A-Z
-                </label>
-              </div>
-              <div id="filterMenu" class="tool-menu">
-                <div class="tool-menu__title">Filter</div>
-                <div class="tool-filter">
-                  <label for="tagFilterInput">Tags (comma separated)</label>
-                  <input id="tagFilterInput" placeholder="tag1, tag2" />
-                </div>
-                <div class="tool-menu__actions">
-                  <button id="filterClearBtn" class="ghost">Clear</button>
-                  <button id="filterApplyBtn">Apply</button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <div class="list-header__row list-header__row--tools"></div>
         </div>
           <div id="clipList" class="clip-list"></div>
         </aside>
@@ -100,10 +66,6 @@
             <div>
               <label>Title</label>
               <input id="titleInput" />
-            </div>
-            <div>
-              <label>Section</label>
-              <select id="sectionSelect" class="section-select"></select>
             </div>
           </div>
 

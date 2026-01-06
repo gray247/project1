@@ -41,6 +41,10 @@
 
 window.__SNIPBOARD_STATE__ = state;
 
+  const editorParams = new URLSearchParams(window.location.search || '');
+  const isEditorOnly = editorParams.get('mode') === 'screenshot-editor';
+  const initialEditorFilename = editorParams.get('file');
+
   const RESERVED_SECTION_IDS = new Set(['delete', 'open', 'save', 'drag']);
   const isReservedSectionId = (value) => {
     if (!value) return false;
@@ -127,6 +131,7 @@ window.__SNIPBOARD_STATE__ = state;
     FULL: 'full',
     WRITING: 'writing',
     TABS: 'tabs',
+    QUARTER: 'quarter',
     MINIMIZED: 'minimized',
   });
 
@@ -138,6 +143,8 @@ window.__SNIPBOARD_STATE__ = state;
 
   const resolveWindowMode = () => {
     if (state.currentClipId) return WINDOW_MODES.WRITING;
+    const clips = Array.isArray(state.clips) ? state.clips : [];
+    if (clips.length === 0) return WINDOW_MODES.QUARTER;
     if (state.activeTabId) return WINDOW_MODES.TABS;
     return WINDOW_MODES.MINIMIZED;
   };
@@ -220,7 +227,6 @@ window.__SNIPBOARD_STATE__ = state;
     menu.style.display = 'none';
     menu.style.zIndex = '99999';
     menu.innerHTML = `
-      <button data-action="view">View Screenshot</button>
       <button data-action="edit">Edit Screenshot</button>
       <button data-action="remove">Remove from Clip</button>
     `;
@@ -232,10 +238,6 @@ window.__SNIPBOARD_STATE__ = state;
       menu.style.display = 'none';
       const clip = getCurrentClip();
       if (!clip) return;
-      if (action === 'view') {
-        openScreenshotViewer(filename);
-        return;
-      }
       if (action === 'edit') {
         openScreenshotEditor(filename);
         return;
@@ -355,6 +357,7 @@ window.__SNIPBOARD_STATE__ = state;
         syncEditorMount(false);
         break;
       case WINDOW_MODES.TABS:
+      case WINDOW_MODES.QUARTER:
         syncClipPaneMount(true);
         syncEditorMount(false);
         break;
@@ -432,7 +435,7 @@ window.__SNIPBOARD_STATE__ = state;
   };
 
   const refreshSectionSelect = () => {
-    if (!sectionSelect) return;
+    if (!sectionSelect || !sectionSelect.isConnected) return;
     const doc = sectionSelect.ownerDocument || document;
     const fragment = doc.createDocumentFragment();
     (state.sections || []).forEach((sec) => {
@@ -570,7 +573,7 @@ window.__SNIPBOARD_STATE__ = state;
         thumb.classList.remove('screenshot-thumb--drag-over');
       });
       thumb.addEventListener('click', () => {
-        openScreenshotViewer(file);
+        openScreenshotEditor(file);
       });
       thumb.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -600,46 +603,36 @@ window.__SNIPBOARD_STATE__ = state;
     }
   }
 
-  async function openScreenshotViewer(filename) {
-    if (!filename) return;
-    const existing = document.querySelector('.screenshot-viewer-overlay');
-    if (existing) existing.remove();
-    const url = `${SCREENSHOT_BASE_URL}/${encodeURIComponent(filename)}`;
-    const overlay = document.createElement('div');
-    overlay.className = 'screenshot-viewer-overlay';
-    overlay.innerHTML = `
-      <div class="screenshot-viewer-backdrop"></div>
-      <div class="screenshot-viewer-dialog">
-        <button class="screenshot-viewer-close" aria-label="Close">&times;</button>
-        <img class="screenshot-viewer-image" src="${url}" alt="Screenshot preview" />
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    const close = () => {
-      overlay.remove();
-      window.removeEventListener('keydown', escHandler);
-    };
-    const backdrop = overlay.querySelector('.screenshot-viewer-backdrop');
-    const closeButton = overlay.querySelector('.screenshot-viewer-close');
-    backdrop?.addEventListener('click', close);
-    closeButton?.addEventListener('click', close);
-    const escHandler = (event) => {
-      if (event.key === 'Escape') {
-        close();
-      }
-    };
-    window.addEventListener('keydown', escHandler);
-  }
-
   function getCanvasCoords(evt, canvas) {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const scaleX = rect.width ? canvas.width / rect.width : 1;
+    const scaleY = rect.height ? canvas.height / rect.height : 1;
     return {
       x: (evt.clientX - rect.left) * scaleX,
       y: (evt.clientY - rect.top) * scaleY,
     };
+  }
+
+  function getEditorAvailableSize(dialog, toolbar) {
+    if (!dialog || !toolbar) {
+      return { availableWidth: 1, availableHeight: 1 };
+    }
+    const dialogRect = dialog.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const dialogStyles = window.getComputedStyle(dialog);
+    const paddingX =
+      Number.parseFloat(dialogStyles.paddingLeft) +
+      Number.parseFloat(dialogStyles.paddingRight);
+    const paddingY =
+      Number.parseFloat(dialogStyles.paddingTop) +
+      Number.parseFloat(dialogStyles.paddingBottom);
+    const gapValue = Number.parseFloat(dialogStyles.rowGap || dialogStyles.gap) || 0;
+    const availableWidth = Math.max(1, dialogRect.width - paddingX);
+    const availableHeight = Math.max(
+      1,
+      dialogRect.height - paddingY - toolbarRect.height - gapValue
+    );
+    return { availableWidth, availableHeight };
   }
 
   /** Screenshot editor overlay **/
@@ -682,6 +675,8 @@ window.__SNIPBOARD_STATE__ = state;
     const canvas = overlay.querySelector('.screenshot-editor-canvas');
     const ctx = canvas.getContext('2d');
     const colorInput = overlay.querySelector('.screenshot-editor-color-picker');
+    const dialog = overlay.querySelector('.screenshot-editor-dialog');
+    const toolbar = overlay.querySelector('.screenshot-editor-toolbar');
     const toolButtons = overlay.querySelectorAll('[data-tool]');
     const swatchButtons = overlay.querySelectorAll('.screenshot-editor-swatches .color-swatch');
     const actionButtons = overlay.querySelectorAll('[data-action]');
@@ -693,32 +688,100 @@ window.__SNIPBOARD_STATE__ = state;
       isDrawing: false,
       pointerId: null,
       escHandler: null,
+      baseImage: null,
+      imageWidth: null,
+      imageHeight: null,
+      zoom: 1,
+      offsetX: 0,
+      offsetY: 0,
+      viewWidth: 0,
+      viewHeight: 0,
+    };
+
+    const baseCanvas = document.createElement('canvas');
+    const baseCtx = baseCanvas.getContext('2d');
+
+    const clampZoom = (value) => Math.min(4, Math.max(0.1, value));
+    const clampOffsets = () => {
+      if (!state.imageWidth || !state.imageHeight) return;
+      const scaledWidth = state.imageWidth * state.zoom;
+      const scaledHeight = state.imageHeight * state.zoom;
+      if (scaledWidth <= state.viewWidth) {
+        state.offsetX = (state.viewWidth - scaledWidth) / 2;
+      } else {
+        const minX = state.viewWidth - scaledWidth;
+        state.offsetX = Math.min(0, Math.max(minX, state.offsetX));
+      }
+      if (scaledHeight <= state.viewHeight) {
+        state.offsetY = (state.viewHeight - scaledHeight) / 2;
+      } else {
+        const minY = state.viewHeight - scaledHeight;
+        state.offsetY = Math.min(0, Math.max(minY, state.offsetY));
+      }
+    };
+
+    const updateViewportSize = () => {
+      if (!dialog || !toolbar) return;
+      const { availableWidth, availableHeight } = getEditorAvailableSize(
+        dialog,
+        toolbar
+      );
+      state.viewWidth = Math.max(1, Math.round(availableWidth));
+      state.viewHeight = Math.max(1, Math.round(availableHeight));
+      canvas.width = state.viewWidth;
+      canvas.height = state.viewHeight;
+      clampOffsets();
+    };
+
+    const renderEditorCanvas = () => {
+      if (!state.baseImage || !state.imageWidth || !state.imageHeight) return;
+      updateViewportSize();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(state.zoom, 0, 0, state.zoom, state.offsetX, state.offsetY);
+      ctx.drawImage(baseCanvas, 0, 0);
+    };
+
+    let renderFrame = null;
+    const scheduleRender = () => {
+      if (renderFrame) return;
+      renderFrame = window.requestAnimationFrame(() => {
+        renderFrame = null;
+        renderEditorCanvas();
+      });
     };
 
     const applyBrushSettings = () => {
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = state.tool === 'eraser' ? 28 : 6;
-      ctx.globalCompositeOperation = state.tool === 'eraser' ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = state.color;
+      if (!baseCtx) return;
+      baseCtx.lineCap = 'round';
+      baseCtx.lineJoin = 'round';
+      baseCtx.lineWidth = state.tool === 'eraser' ? 28 : 6;
+      baseCtx.globalCompositeOperation = state.tool === 'eraser' ? 'destination-out' : 'source-over';
+      baseCtx.strokeStyle = state.color;
     };
 
     const pointerDown = (event) => {
       event.preventDefault();
+      if (!state.baseImage || !baseCtx) return;
       state.isDrawing = true;
       state.pointerId = event.pointerId;
       applyBrushSettings();
       const { x, y } = getCanvasCoords(event, canvas);
-      ctx.beginPath();
-      ctx.moveTo(x, y);
+      const imageX = (x - state.offsetX) / state.zoom;
+      const imageY = (y - state.offsetY) / state.zoom;
+      baseCtx.beginPath();
+      baseCtx.moveTo(imageX, imageY);
       canvas.setPointerCapture(event.pointerId);
     };
 
     const pointerMove = (event) => {
-      if (!state.isDrawing || state.pointerId !== event.pointerId) return;
+      if (!state.isDrawing || state.pointerId !== event.pointerId || !baseCtx) return;
       const { x, y } = getCanvasCoords(event, canvas);
-      ctx.lineTo(x, y);
-      ctx.stroke();
+      const imageX = (x - state.offsetX) / state.zoom;
+      const imageY = (y - state.offsetY) / state.zoom;
+      baseCtx.lineTo(imageX, imageY);
+      baseCtx.stroke();
+      scheduleRender();
     };
 
     const stopDrawing = () => {
@@ -735,6 +798,41 @@ window.__SNIPBOARD_STATE__ = state;
     canvas.addEventListener('pointerup', stopDrawing);
     canvas.addEventListener('pointercancel', stopDrawing);
     canvas.addEventListener('pointerleave', stopDrawing);
+    canvas.addEventListener(
+      'wheel',
+      (event) => {
+        if (!state.baseImage) return;
+        const { deltaY } = event;
+        if (event.ctrlKey) {
+          event.preventDefault();
+          const zoomDelta = deltaY < 0 ? 1.1 : 0.9;
+          const nextZoom = clampZoom(state.zoom * zoomDelta);
+          const { x, y } = getCanvasCoords(event, canvas);
+          const imageX = (x - state.offsetX) / state.zoom;
+          const imageY = (y - state.offsetY) / state.zoom;
+          state.zoom = nextZoom;
+          state.offsetX = x - imageX * state.zoom;
+          state.offsetY = y - imageY * state.zoom;
+          clampOffsets();
+          renderEditorCanvas();
+          return;
+        }
+        const scaledWidth = state.imageWidth * state.zoom;
+        const scaledHeight = state.imageHeight * state.zoom;
+        const canPan =
+          scaledWidth > state.viewWidth || scaledHeight > state.viewHeight;
+        if (!canPan) return;
+        event.preventDefault();
+        if (event.shiftKey) {
+          state.offsetX -= deltaY;
+        } else {
+          state.offsetY -= deltaY;
+        }
+        clampOffsets();
+        renderEditorCanvas();
+      },
+      { passive: false }
+    );
 
     toolButtons.forEach((button) => {
       button.addEventListener('click', () => {
@@ -758,6 +856,10 @@ window.__SNIPBOARD_STATE__ = state;
     });
 
     const close = () => {
+      if (isEditorOnly) {
+        window.close();
+        return;
+      }
       overlay.style.display = 'none';
       state.filename = null;
       state.isDrawing = false;
@@ -777,15 +879,19 @@ window.__SNIPBOARD_STATE__ = state;
     const handleSave = async () => {
       if (!state.filename) return;
       try {
-        const dataUrl = canvas.toDataURL('image/png');
+        const dataUrl = baseCanvas ? baseCanvas.toDataURL('image/png') : canvas.toDataURL('image/png');
         await api.saveScreenshot?.([{ filename: state.filename, dataUrl }]);
         evictCachedScreenshotUrl(state.filename);
-        window.SnipToast?.show?.('Screenshot saved');
-        const clip = getCurrentClip();
-        if (clip) {
-          await renderEditorScreenshots(clip);
+        if (isEditorOnly) {
+          api.send?.('screenshot-editor:updated', { filename: state.filename });
+        } else {
+          const clip = getCurrentClip();
+          if (clip) {
+            await renderEditorScreenshots(clip);
+          }
+          refreshClipThumbnails();
         }
-        refreshClipThumbnails();
+        window.SnipToast?.show?.('Screenshot saved');
       } catch (err) {
         console.error('Screenshot edit save failed', err);
         window.SnipToast?.show?.('Failed to save screenshot');
@@ -805,12 +911,25 @@ window.__SNIPBOARD_STATE__ = state;
       }
     });
 
+    if (dialog && toolbar && window.ResizeObserver) {
+      const resizeObserver = new ResizeObserver(() => {
+        if (overlay.style.display !== 'flex') return;
+        renderEditorCanvas();
+      });
+      resizeObserver.observe(dialog);
+    }
+
     screenshotEditor = {
       overlay,
       canvas,
       ctx,
+      baseCanvas,
+      baseCtx,
       state,
       close,
+      dialog,
+      toolbar,
+      renderEditorCanvas,
     };
     return screenshotEditor;
   }
@@ -830,8 +949,16 @@ window.__SNIPBOARD_STATE__ = state;
     return 420;
   };
 
-    async function openScreenshotEditor(filename) {
+  async function openScreenshotEditor(filename) {
       if (!filename) return;
+      if (!isEditorOnly) {
+        if (typeof api.openScreenshotEditor === 'function') {
+          await api.openScreenshotEditor(filename);
+        } else if (typeof api.invoke === 'function') {
+          await api.invoke('screenshot-editor:open', filename);
+        }
+        return;
+      }
       const editor = ensureScreenshotEditor();
       const url = await getCachedScreenshotUrl(filename);
       if (!url) {
@@ -841,21 +968,24 @@ window.__SNIPBOARD_STATE__ = state;
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const dpr = window.devicePixelRatio || 1;
       const width = img.naturalWidth || img.width || 800;
       const height = img.naturalHeight || img.height || 600;
-      const maxCanvasWidth = getEditorPaneWidth();
-      editor.canvas.width = width * dpr;
-      editor.canvas.height = height * dpr;
-      editor.canvas.style.width = `${Math.min(width, maxCanvasWidth)}px`;
-      editor.canvas.style.height = `${Math.min(height, window.innerHeight - 160)}px`;
-      editor.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      editor.ctx.clearRect(0, 0, editor.canvas.width, editor.canvas.height);
-      editor.ctx.save();
-      editor.ctx.scale(dpr, dpr);
-      editor.ctx.drawImage(img, 0, 0, width, height);
-      editor.ctx.restore();
       editor.overlay.style.display = 'flex';
+      if (!editor.dialog || !editor.toolbar) return;
+      editor.state.baseImage = img;
+      editor.state.imageWidth = width;
+      editor.state.imageHeight = height;
+      editor.state.zoom = 1;
+      editor.state.offsetX = 0;
+      editor.state.offsetY = 0;
+      if (editor.baseCanvas && editor.baseCtx) {
+        editor.baseCanvas.width = Math.max(1, Math.round(width));
+        editor.baseCanvas.height = Math.max(1, Math.round(height));
+        editor.baseCtx.setTransform(1, 0, 0, 1, 0, 0);
+        editor.baseCtx.clearRect(0, 0, editor.baseCanvas.width, editor.baseCanvas.height);
+        editor.baseCtx.drawImage(img, 0, 0, width, height);
+      }
+      editor.renderEditorCanvas();
     };
     img.onerror = () => {
       window.SnipToast?.show?.('Unable to load screenshot');
@@ -866,13 +996,40 @@ window.__SNIPBOARD_STATE__ = state;
       window.removeEventListener('keydown', editor.state.escHandler);
     }
     const escHandler = (event) => {
+      const target = event.target;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (event.key === 'Escape') {
         editor.close();
+        return;
       }
     };
     editor.state.escHandler = escHandler;
     window.addEventListener('keydown', escHandler);
   }
+
+  let screenshotEditorIpcBound = false;
+  const bindScreenshotEditorIpc = () => {
+    if (screenshotEditorIpcBound || typeof api.on !== 'function') return;
+    screenshotEditorIpcBound = true;
+    api.on('screenshot-editor:updated', (_event, payload) => {
+      const filename = payload?.filename || payload;
+      if (!filename) return;
+      evictCachedScreenshotUrl(filename);
+      const clip = getCurrentClip();
+      if (clip) {
+        void renderEditorScreenshots(clip);
+      }
+      refreshClipThumbnails();
+    });
+    if (isEditorOnly) {
+      api.on('screenshot-editor:open', (_event, payload) => {
+        const filename = payload?.filename || payload;
+        if (!filename) return;
+        void openScreenshotEditor(filename);
+      });
+    }
+  };
   const isRowVisible = (row, container) => {
     if (!row || !container) return true;
     const rowRect = row.getBoundingClientRect();
@@ -954,7 +1111,15 @@ window.__SNIPBOARD_STATE__ = state;
   function getActiveSectionId() {
     const candidate = state.activeTabId || state.currentSectionId || 'all';
     if (candidate === 'all') return 'all';
-    return normalizeSectionId(candidate) || resolveFallbackSectionId();
+    const normalized = normalizeSectionId(candidate);
+    const sections = state.sections || [];
+    if (!normalized) {
+      return sections.length ? resolveFallbackSectionId() : 'all';
+    }
+    if (sections.length && !sections.some((sec) => sec.id === normalized)) {
+      return resolveFallbackSectionId();
+    }
+    return normalized;
   }
 
   function getCurrentSection() {
@@ -1000,6 +1165,11 @@ window.__SNIPBOARD_STATE__ = state;
   }
 
   function refreshClipList() {
+    const resolvedSection = getActiveSectionId();
+    if (resolvedSection !== state.activeTabId) {
+      state.activeTabId = resolvedSection;
+      state.currentSectionId = resolvedSection;
+    }
     const prev = new Map((state.clips || []).map((c) => [c.id, c]));
     clipsApi?.renderClipList?.();
     tabsApi?.updateTabCounts?.();
@@ -1165,14 +1335,7 @@ window.__SNIPBOARD_STATE__ = state;
   const clipList = document.getElementById('clipList');
   const sectionSelect = document.getElementById('sectionSelect');
   if (sectionSelect) {
-    sectionSelect.onchange = () => {
-      const clip = getCurrentClip();
-      if (clip) {
-        const nextSectionId = normalizeSectionId(sectionSelect.value) || resolveFallbackSectionId();
-        clip.sectionId = nextSectionId;
-        state.currentSectionId = nextSectionId;
-      }
-    };
+    sectionSelect.remove();
   }
   const clipTabNameEl = document.getElementById('clipTabName');
   const clipTabPathEl = document.getElementById('clipTabPath');
@@ -1748,12 +1911,21 @@ window.__SNIPBOARD_STATE__ = state;
     thumbnailListenersBound = true;
   };
 
+  const initEditorWindow = async () => {
+    bindScreenshotEditorIpc();
+    document.body.classList.add('editor-only');
+    if (initialEditorFilename) {
+      await openScreenshotEditor(initialEditorFilename);
+    }
+  };
+
   const init = async () => {
     updateResponsiveLayout();
     await refreshFull();
     bindToolbar();
     bindFilters();
     bindThumbnailLazyLoad();
+    bindScreenshotEditorIpc();
     updateResponsiveLayout();
     window.addEventListener('resize', updateResponsiveLayout);
     editorApi?.bindEditorEvents?.();
@@ -1764,6 +1936,10 @@ window.__SNIPBOARD_STATE__ = state;
   const start = () => {
     if (hasInitialized) return;
     hasInitialized = true;
+    if (isEditorOnly) {
+      void initEditorWindow();
+      return;
+    }
     init();
   };
   if (document.readyState === 'loading') {

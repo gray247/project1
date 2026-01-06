@@ -384,6 +384,9 @@
       const main = doc.createElement('div');
       main.className = 'clip-row__main';
 
+      const iconEl = createClipIconElement(clip);
+      if (iconEl) main.appendChild(iconEl);
+
       const title = doc.createElement('div');
       title.className = 'clip-row__title';
       title.textContent = clip.title || '(Untitled)';
@@ -430,6 +433,9 @@
       row.dataset.clipId = clip.id;
       row.draggable = true;
       applyClipRowState(row, clip);
+
+      const iconEl = createClipIconElement(clip);
+      if (iconEl) row.appendChild(iconEl);
 
       const title = doc.createElement('div');
       title.className = 'clip-card__title';

@@ -603,6 +603,13 @@
         }
 
         el.appendChild(content);
+        if (!isAll && tab?.exportPath) {
+          const indicator = doc.createElement('span');
+          indicator.className = 'tab-meta-indicator';
+          indicator.dataset.meta = 'export';
+          indicator.title = 'Export destination configured';
+          el.appendChild(indicator);
+        }
         el.dataset.sectionId = isAll ? 'all' : tab.id;
         el.draggable = !isAll;
         el.onclick = () => setActiveTab(el.dataset.sectionId);
