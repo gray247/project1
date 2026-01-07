@@ -10,6 +10,7 @@
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
     "ci-test": "echo 'Skipping electron UI in CI'",
+    "prebuild": "node -e \"if(process.platform==='win32'){const{execSync}=require('child_process');try{execSync('powershell -NoProfile -Command \"\"Get-Process Project1 -ErrorAction SilentlyContinue | Stop-Process -Force\"\"',{stdio:'ignore'});}catch(e){}try{execSync('powershell -NoProfile -Command \"\"if(Test-Path dist\\\\win-unpacked){Remove-Item -Recurse -Force dist\\\\win-unpacked}\"\"',{stdio:'ignore'});}catch(e){}}\"",
     "build": "electron-builder --win --x64"
   },
   "dependencies": {
@@ -28,7 +29,7 @@
   },
   "build": {
     "appId": "com.snipboard.app",
-    "productName": "SnipBoard",
+  "productName": "Project1",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "directories": {
       "output": "dist"
@@ -61,7 +62,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SnipBoard"
+      "shortcutName": "Project1"
     }
   }
 }

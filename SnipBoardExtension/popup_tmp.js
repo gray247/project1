@@ -130,7 +130,7 @@ async function updateSelectedCount() {
   } else {
     btn.disabled = false;
     btn.textContent =
-      count === 1 ? "Save 1 message to SnipBoard" : `Save ${count} messages`;
+      count === 1 ? "Save 1 message to Project1" : `Save ${count} messages`;
     logStatus(`${count} message${count === 1 ? "" : "s"} ready`);
   }
 }
@@ -208,7 +208,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       } else {
         btn.disabled = false;
         btn.textContent =
-          msg.count === 1 ? "Save 1 message to SnipBoard" : `Save ${msg.count} messages`;
+          msg.count === 1 ? "Save 1 message to Project1" : `Save ${msg.count} messages`;
       }
     }
   }

@@ -2278,13 +2278,22 @@ button.ghost {
   -moz-appearance: checkbox !important;
 }
 
-#configureFieldsModal #configureFieldsList label.configure-field-row span {
+#configureFieldsModal #configureFieldsList label.configure-field-row span {     
   margin-left: 0 !important;
   text-align: left !important;
   flex: none !important;
   white-space: nowrap;
   overflow: visible;
 }
+
+body.theme-light #configureFieldsModal .mini-modal__header,
+body.theme-light #configureFieldsModal .configure-fields-body,
+body.theme-light #configureFieldsModal .configure-field-row,
+body.theme-light #configureFieldsModal .configure-field-row span,
+body.theme-light #configureFieldsModal #configureFieldsList label.configure-field-row {
+  color: var(--text-on-light);
+}
+
 
 .rename-modal__content {
   width: 420px;
@@ -2757,6 +2766,10 @@ body:not(.theme-light) .context-menu li.danger {
   color: var(--text-on-dark);
 }
 
+body:not(.theme-light) .screenshot-editor-actions .btn[data-action="save"] {
+  color: var(--text-on-dark);
+}
+
 body:not(.theme-light) #clipTabName,
 body:not(.theme-light) #clipTabPath,
 body:not(.theme-light) .sidebar-tab-name {
@@ -2798,6 +2811,12 @@ body:not(.theme-light) .tool-menu__title {
 
 .screenshot-editor-swatches .color-swatch {
   border-color: var(--border-strong);
+}
+
+body:not(.theme-light) #configureFieldsModal .configure-field-row,
+body:not(.theme-light) #configureFieldsModal .configure-field-row span,
+body:not(.theme-light) #configureFieldsModal #configureFieldsList label.configure-field-row {
+  color: var(--text-on-light);
 }
 
 .toast,
