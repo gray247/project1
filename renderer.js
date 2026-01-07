@@ -1366,6 +1366,7 @@ window.__SNIPBOARD_STATE__ = state;
   const deleteClipBtn = document.getElementById('deleteClipBtn');
   const addShotBtn = document.getElementById('addShotBtn');
   const listAddBtn = document.getElementById('listAddBtn');
+  const themeToggleBtn = document.getElementById('themeToggleBtn');
 
   const searchInput = document.getElementById('searchInput');
   const tagFilterInput = document.getElementById('tagFilterInput');
@@ -1375,6 +1376,38 @@ window.__SNIPBOARD_STATE__ = state;
   const filterToggleBtn = document.getElementById('filterToggleBtn');
   const filterApplyBtn = document.getElementById('filterApplyBtn');
   const filterClearBtn = document.getElementById('filterClearBtn');
+
+  const THEME_STORAGE_KEY = 'snipboard.theme';
+  const applyTheme = (mode) => {
+    const isLight = mode === 'light';
+    document.body.classList.toggle('theme-light', isLight);
+    if (themeToggleBtn) {
+      themeToggleBtn.textContent = isLight ? 'Dark Mode' : 'Light Mode';
+    }
+  };
+  if (themeToggleBtn) {
+    let initialTheme = 'dark';
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored === 'light' || stored === 'dark') {
+        initialTheme = stored;
+      }
+    } catch (err) {
+      void err;
+    }
+    applyTheme(initialTheme);
+    themeToggleBtn.addEventListener('click', () => {
+      const nextTheme = document.body.classList.contains('theme-light')
+        ? 'dark'
+        : 'light';
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      } catch (err) {
+        void err;
+      }
+      applyTheme(nextTheme);
+    });
+  }
 
   function persistClipAppearance(entity, patch = {}) {
     if (!entity || !entity.id) return;

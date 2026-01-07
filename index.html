@@ -13,7 +13,10 @@
       <aside id="tabsPane" class="tabs-pane">
         <div class="tabs-search">
           <label>Search</label>
-          <input id="searchInput" placeholder="Search..." />
+          <div class="tabs-search-row">
+            <input id="searchInput" placeholder="Search..." />
+            <button id="themeToggleBtn" class="ghost" aria-label="Toggle theme">Light Mode</button>
+          </div>
         </div>
         <div id="sectionTabs" class="section-tabs">
           <button id="addTabBtn" class="section-pill add-tab" title="Create new tab">+ Tab</button>
@@ -53,7 +56,7 @@
           <div class="main-actions editor-actions">
             <button id="saveClipBtn">Save Clip</button>
             <button id="deleteClipBtn" class="danger">Delete</button>
-            <button id="addShotBtn" class="ghost">+ Screenshot</button>
+            <button id="addShotBtn" class="ghost">+ Snapshot</button>
             <div class="source-url-group">
               <div class="source-input">
                 <button id="openSourceBtn" data-action="open-source-url" title="Open source URL" class="ghost open-btn">
